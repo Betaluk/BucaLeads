@@ -94,6 +94,13 @@ export default function App() {
     }
   };
 
+  const [notification, setNotification] = useState(null);
+
+  const showNotification = (msg, type = 'success') => {
+    setNotification({ msg, type });
+    setTimeout(() => setNotification(null), 5000);
+  };
+
   const handleSearchSubmit = async (e) => {
     e.preventDefault();
     if (!niche || !location) return;
@@ -115,15 +122,21 @@ export default function App() {
       });
 
       if (res.ok) {
+        const newLeads = await res.json();
         await fetchLeads();
         await fetchStats();
         setActiveTab('kanban');
+        if (newLeads.length > 0) {
+          showNotification(`Sucesso! ${newLeads.length} novos leads minerados e organizados pelo Lead Score.`, 'success');
+        } else {
+          showNotification('A busca não encontrou novas empresas nessa localidade.', 'info');
+        }
       } else {
-        alert('Erro ao realizar a busca no Google. Verifique os logs.');
+        showNotification('Erro ao realizar a busca no Google. Verifique os logs do servidor.', 'error');
       }
     } catch (err) {
       console.error('Erro na requisição de busca:', err);
-      alert('Falha na comunicação com o backend local.');
+      showNotification('Falha de conexão com o backend local (porta 8000).', 'error');
     } finally {
       setSearchLoading(false);
     }
@@ -244,6 +257,49 @@ export default function App() {
           <Download size={18} />
         </button>
       </header>
+
+      {/* Notificação Toast */}
+      {notification && (
+        <div
+          style={{
+            padding: '14px 20px',
+            borderRadius: '12px',
+            fontSize: '0.92rem',
+            fontWeight: '600',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            background:
+              notification.type === 'error'
+                ? 'rgba(239, 68, 68, 0.2)'
+                : notification.type === 'info'
+                ? 'rgba(59, 130, 246, 0.2)'
+                : 'rgba(16, 185, 129, 0.2)',
+            border: `1px solid ${
+              notification.type === 'error'
+                ? 'rgba(239, 68, 68, 0.4)'
+                : notification.type === 'info'
+                ? 'rgba(59, 130, 246, 0.4)'
+                : 'rgba(16, 185, 129, 0.4)'
+            }`,
+            color:
+              notification.type === 'error'
+                ? '#f87171'
+                : notification.type === 'info'
+                ? '#60a5fa'
+                : '#34d399',
+            animation: 'fadeIn 0.3s ease'
+          }}
+        >
+          <span>{notification.msg}</span>
+          <button
+            onClick={() => setNotification(null)}
+            style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', fontWeight: 'bold' }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Stats Ribbon */}
       <div className="stats-ribbon">

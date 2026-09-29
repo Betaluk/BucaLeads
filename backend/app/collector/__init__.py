@@ -1,3 +1,4 @@
+import asyncio
 from typing import List, Dict, Any, Optional
 from app.collector.gplaces import GooglePlacesCollector
 from app.collector.scraper import GoogleMapsScraper
@@ -13,8 +14,8 @@ async def orchestrate_collection(
     deep_audit: bool = True
 ) -> List[Dict[str, Any]]:
     """
-    Orquestra a coleta híbrida (Google Places API + Playwright Fallback),
-    executa a auditoria leve dos sites e calcula o Lead Score final.
+    Orquestra a coleta híbrida (Google Places API + Playwright Scraper),
+    executa a auditoria assíncrona concorrente dos sites e calcula o Lead Score final.
     """
     raw_leads: List[Dict[str, Any]] = []
 
@@ -33,7 +34,6 @@ async def orchestrate_collection(
         try:
             scraper = GoogleMapsScraper(headless=True)
             scraped = await scraper.search(query, limit=remaining)
-            # Evitar duplicados por nome
             existing_names = {l["business_name"].lower() for l in raw_leads}
             for s in scraped:
                 if s["business_name"].lower() not in existing_names:
@@ -41,17 +41,25 @@ async def orchestrate_collection(
         except Exception as e:
             print(f"[Scraper Warning] Falha no scraper Playwright: {e}")
 
-    # 3. Enriquecer cada lead com Auditoria e Lead Scoring
-    enriched_leads: List[Dict[str, Any]] = []
-
-    for raw in raw_leads:
+    # 3. Enriquecer cada lead com Auditoria e Lead Scoring em paralelo
+    async def enrich_lead(raw: Dict[str, Any]) -> Dict[str, Any]:
         website = raw.get("website") or ""
         audit_data = None
         website_status = "none"
 
+        # Validar website (remover lixo ou parâmetros inválidos)
+        if website:
+            website = website.strip()
+            if website.startswith("/aclk") or "googleadservices" in website or website.startswith("https://www.google.com"):
+                website = ""
+
         if website and deep_audit:
-            audit_data = await inspect_website(website)
-            website_status = audit_data.get("website_status", "none")
+            try:
+                # Limite de 4.0s para não travar a requisição geral
+                audit_data = await asyncio.wait_for(inspect_website(website), timeout=4.0)
+                website_status = audit_data.get("website_status", "healthy")
+            except Exception:
+                website_status = "insecure"
         elif website:
             website_status = "healthy"
 
@@ -70,7 +78,7 @@ async def orchestrate_collection(
             has_recent_activity=has_recent
         )
 
-        lead_dict = {
+        return {
             "business_name": raw.get("business_name", "Sem Nome"),
             "niche": niche,
             "address": raw.get("address", ""),
@@ -89,7 +97,13 @@ async def orchestrate_collection(
             "score_breakdown": breakdown,
             "audit_data": audit_data
         }
-        enriched_leads.append(lead_dict)
+
+    # Executar enriquecimento concorrente
+    if raw_leads:
+        enriched_leads = await asyncio.gather(*(enrich_lead(r) for r in raw_leads))
+        enriched_leads = list(enriched_leads)
+    else:
+        enriched_leads = []
 
     # Ordenar pelos melhores leads (maior score primeiro)
     enriched_leads.sort(key=lambda x: x["lead_score"], reverse=True)
