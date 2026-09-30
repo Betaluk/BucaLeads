@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Search as SearchIcon,
   Flame,
@@ -66,10 +66,18 @@ export default function App() {
   const [skipExisting, setSkipExisting] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  // Filtros de Tabela
-  const [filterTier, setFilterTier] = useState('all');
-  const [filterSite, setFilterSite] = useState('all');
+  // Filtros Avançados Compartilhados (Kanban & Tabela)
   const [searchTerm, setSearchTerm] = useState('');
+  const [filterSite, setFilterSite] = useState('all');
+  const [filterPhone, setFilterPhone] = useState('all');
+  const [filterCity, setFilterCity] = useState('all');
+  const [filterTier, setFilterTier] = useState('all');
+  const [filterSource, setFilterSource] = useState('all');
+  const [filterNotes, setFilterNotes] = useState('all');
+  const [filterRating, setFilterRating] = useState('all');
+  const [filterActivity, setFilterActivity] = useState('all');
+  const [showExtraFilters, setShowExtraFilters] = useState(false);
+
 
   // Modais
   const [selectedLead, setSelectedLead] = useState(null);
@@ -410,18 +418,133 @@ export default function App() {
     setActiveTab('table');
   };
 
-  // Filtragem de Leads
-  const filteredLeads = leads.filter((l) => {
-    const matchesSearch =
-      l.business_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      l.niche.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (l.city && l.city.toLowerCase().includes(searchTerm.toLowerCase()));
+  // Cidades únicas disponíveis nos leads carregados
+  const availableCities = useMemo(() => {
+    const citySet = new Set();
+    leads.forEach((l) => {
+      if (l.city && l.city.trim()) {
+        citySet.add(l.city.trim());
+      }
+    });
+    return Array.from(citySet).sort();
+  }, [leads]);
 
-    const matchesTier = filterTier === 'all' || l.score_tier === filterTier;
-    const matchesSite = filterSite === 'all' || l.website_status === filterSite;
+  // Contagem de filtros ativos
+  const activeFiltersCount = useMemo(() => {
+    let count = 0;
+    if (searchTerm.trim()) count++;
+    if (filterTier !== 'all') count++;
+    if (filterSite !== 'all') count++;
+    if (filterPhone !== 'all') count++;
+    if (filterCity !== 'all') count++;
+    if (filterSource !== 'all') count++;
+    if (filterNotes !== 'all') count++;
+    if (filterRating !== 'all') count++;
+    if (filterActivity !== 'all') count++;
+    return count;
+  }, [
+    searchTerm,
+    filterTier,
+    filterSite,
+    filterPhone,
+    filterCity,
+    filterSource,
+    filterNotes,
+    filterRating,
+    filterActivity
+  ]);
 
-    return matchesSearch && matchesTier && matchesSite;
-  });
+  const clearAllFilters = () => {
+    setSearchTerm('');
+    setFilterTier('all');
+    setFilterSite('all');
+    setFilterPhone('all');
+    setFilterCity('all');
+    setFilterSource('all');
+    setFilterNotes('all');
+    setFilterRating('all');
+    setFilterActivity('all');
+  };
+
+  // Filtragem Multifatorial de Leads (Compartilhada entre Kanban e Tabela)
+  const filteredLeads = useMemo(() => {
+    return leads.filter((l) => {
+      // 1. Busca textual (nome, nicho, cidade, telefone, endereço)
+      if (searchTerm.trim()) {
+        const term = searchTerm.toLowerCase();
+        const matchesName = l.business_name?.toLowerCase().includes(term);
+        const matchesNiche = l.niche?.toLowerCase().includes(term);
+        const matchesCity = l.city?.toLowerCase().includes(term);
+        const matchesPhone = l.phone?.toLowerCase().includes(term);
+        const matchesAddress = l.address?.toLowerCase().includes(term);
+        if (!matchesName && !matchesNiche && !matchesCity && !matchesPhone && !matchesAddress) {
+          return false;
+        }
+      }
+
+      // 2. Situação do Site
+      if (filterSite !== 'all' && l.website_status !== filterSite) {
+        return false;
+      }
+
+      // 3. Canal de Telefone / WhatsApp
+      if (filterPhone !== 'all') {
+        if (filterPhone === 'mobile' && l.phone_type !== 'mobile') return false;
+        if (filterPhone === 'landline' && l.phone_type !== 'landline') return false;
+        if (filterPhone === 'none' && l.phone && l.phone.trim().length > 0) return false;
+      }
+
+      // 4. Cidade
+      if (filterCity !== 'all') {
+        if (!l.city || l.city.trim().toLowerCase() !== filterCity.toLowerCase()) {
+          return false;
+        }
+      }
+
+      // 5. Tier / Score
+      if (filterTier !== 'all' && l.score_tier !== filterTier) {
+        return false;
+      }
+
+      // 6. Origem
+      if (filterSource !== 'all' && l.source !== filterSource) {
+        return false;
+      }
+
+      // 7. Anotações
+      if (filterNotes !== 'all') {
+        const hasNotes = l.notes && l.notes.trim().length > 0;
+        if (filterNotes === 'has_notes' && !hasNotes) return false;
+        if (filterNotes === 'no_notes' && hasNotes) return false;
+      }
+
+      // 8. Avaliação Mínima
+      if (filterRating !== 'all') {
+        const minRating = parseFloat(filterRating);
+        if ((l.rating || 0) < minRating) return false;
+      }
+
+      // 9. Atividade Recente
+      if (filterActivity !== 'all') {
+        if (filterActivity === 'active' && !l.has_recent_activity) return false;
+        if (filterActivity === 'inactive' && l.has_recent_activity) return false;
+      }
+
+      return true;
+    });
+  }, [
+    leads,
+    searchTerm,
+    filterSite,
+    filterPhone,
+    filterCity,
+    filterTier,
+    filterSource,
+    filterNotes,
+    filterRating,
+    filterActivity
+  ]);
+
 
   return (
     <div className="app-container">
@@ -588,8 +711,12 @@ export default function App() {
             <BarChart3 size={24} />
           </div>
           <div className="stat-info">
-            <div className="stat-value">{stats ? stats.total : leads.length}</div>
-            <div className="stat-label">Total de Leads Ativos</div>
+            <div className="stat-value">
+              {activeFiltersCount > 0 ? filteredLeads.length : stats ? stats.total : leads.length}
+            </div>
+            <div className="stat-label">
+              {activeFiltersCount > 0 ? 'Leads Filtrados' : 'Total de Leads'}
+            </div>
           </div>
         </div>
 
@@ -598,7 +725,13 @@ export default function App() {
             <Flame size={24} />
           </div>
           <div className="stat-info">
-            <div className="stat-value">{stats ? stats.hot : 0}</div>
+            <div className="stat-value">
+              {activeFiltersCount > 0
+                ? filteredLeads.filter((l) => l.score_tier === 'hot').length
+                : stats
+                ? stats.hot
+                : 0}
+            </div>
             <div className="stat-label">Leads Quentes (85+ pts)</div>
           </div>
         </div>
@@ -608,7 +741,13 @@ export default function App() {
             <Globe size={24} />
           </div>
           <div className="stat-info">
-            <div className="stat-value">{stats ? stats.no_site : 0}</div>
+            <div className="stat-value">
+              {activeFiltersCount > 0
+                ? filteredLeads.filter((l) => l.website_status === 'none').length
+                : stats
+                ? stats.no_site
+                : 0}
+            </div>
             <div className="stat-label">Sem Site Cadastrado</div>
           </div>
         </div>
@@ -618,11 +757,201 @@ export default function App() {
             <Trophy size={24} />
           </div>
           <div className="stat-info">
-            <div className="stat-value">{stats ? stats.by_status?.won || 0 : 0}</div>
+            <div className="stat-value">
+              {activeFiltersCount > 0
+                ? filteredLeads.filter((l) => l.crm_status === 'won').length
+                : stats
+                ? stats.by_status?.won || 0
+                : 0}
+            </div>
             <div className="stat-label">Contratos Fechados</div>
           </div>
         </div>
       </div>
+
+      {/* BARRA DE FILTROS INTELIGENTES (Compartilhada entre Kanban e Tabela) */}
+      {(activeTab === 'kanban' || activeTab === 'table') && (
+        <div className="filter-panel">
+          <div className="filter-panel-main">
+            {/* Busca Textual */}
+            <div className="search-input-wrapper">
+              <SearchIcon size={16} className="search-icon-inside" />
+              <input
+                type="text"
+                className="search-filter-input"
+                placeholder="Buscar por nome, nicho, cidade ou telefone..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+              {searchTerm && (
+                <button
+                  className="btn-clear-search"
+                  onClick={() => setSearchTerm('')}
+                  title="Limpar busca textual"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            {/* Filtro: Situação do Site */}
+            <select
+              className="filter-select"
+              value={filterSite}
+              onChange={(e) => setFilterSite(e.target.value)}
+              title="Filtrar por situação do website"
+            >
+              <option value="all">🌐 Todos os Sites</option>
+              <option value="none">❌ Sem Site Cadastrado</option>
+              <option value="social_media">📱 Usa Rede Social (Instagram/FB)</option>
+              <option value="insecure">⚠️ Inseguro / Sem HTTPS</option>
+              <option value="outdated">⏱️ Lento / Não Mobile</option>
+              <option value="healthy">✅ Site Ativo e Seguro</option>
+            </select>
+
+            {/* Filtro: Canal de Telefone / WhatsApp */}
+            <select
+              className="filter-select"
+              value={filterPhone}
+              onChange={(e) => setFilterPhone(e.target.value)}
+              title="Filtrar por tipo de contato telefônico"
+            >
+              <option value="all">📞 Todos os Telefones</option>
+              <option value="mobile">📱 Somente Celular / WhatsApp</option>
+              <option value="landline">☎️ Somente Fixo</option>
+              <option value="none">🚫 Sem Telefone</option>
+            </select>
+
+            {/* Filtro: Cidade */}
+            <select
+              className="filter-select"
+              value={filterCity}
+              onChange={(e) => setFilterCity(e.target.value)}
+              title="Filtrar por cidade cadastrada"
+            >
+              <option value="all">📍 Todas as Cidades ({availableCities.length})</option>
+              {availableCities.map((city) => (
+                <option key={city} value={city}>
+                  📍 {city}
+                </option>
+              ))}
+            </select>
+
+            {/* Filtro: Score / Tier */}
+            <select
+              className="filter-select"
+              value={filterTier}
+              onChange={(e) => setFilterTier(e.target.value)}
+              title="Filtrar por qualificação de Lead Score"
+            >
+              <option value="all">🔥 Todos os Scores</option>
+              <option value="hot">🔥 Quentes (85+ pts)</option>
+              <option value="warm">⚡ Promissores (60-84 pts)</option>
+              <option value="cold">❄️ Frios (&lt;60 pts)</option>
+            </select>
+
+            {/* Botão de Toggle para Filtros Extras */}
+            <button
+              className={`btn-toggle-filters ${showExtraFilters ? 'active' : ''}`}
+              onClick={() => setShowExtraFilters(!showExtraFilters)}
+              title="Exibir mais opções de filtros avançados"
+            >
+              <Filter size={15} /> Mais Filtros
+            </button>
+
+            {/* Botão Limpar Filtros */}
+            {activeFiltersCount > 0 && (
+              <button
+                className="btn-clear-all"
+                onClick={clearAllFilters}
+                title="Limpar todos os filtros ativos"
+              >
+                <RotateCcw size={13} /> Limpar ({activeFiltersCount})
+              </button>
+            )}
+          </div>
+
+          {/* Painel Expansível de Filtros Avançados */}
+          {showExtraFilters && (
+            <div className="filter-panel-extra">
+              {/* Origem da Coleta */}
+              <div className="filter-extra-item">
+                <label>Origem:</label>
+                <select
+                  className="filter-select-sm"
+                  value={filterSource}
+                  onChange={(e) => setFilterSource(e.target.value)}
+                >
+                  <option value="all">Todas as Origens</option>
+                  <option value="local_scraper">Scraper Playwright</option>
+                  <option value="google_places_api">Google Places API</option>
+                </select>
+              </div>
+
+              {/* Anotações Comerciais */}
+              <div className="filter-extra-item">
+                <label>Anotações:</label>
+                <select
+                  className="filter-select-sm"
+                  value={filterNotes}
+                  onChange={(e) => setFilterNotes(e.target.value)}
+                >
+                  <option value="all">Todos os Leads</option>
+                  <option value="has_notes">📝 Com Anotações Salvas</option>
+                  <option value="no_notes">Sem Anotações</option>
+                </select>
+              </div>
+
+              {/* Avaliação Mínima */}
+              <div className="filter-extra-item">
+                <label>Estrelas:</label>
+                <select
+                  className="filter-select-sm"
+                  value={filterRating}
+                  onChange={(e) => setFilterRating(e.target.value)}
+                >
+                  <option value="all">Todas as Avaliações</option>
+                  <option value="4.5">⭐ 4.5 ou mais</option>
+                  <option value="4.0">⭐ 4.0 ou mais</option>
+                  <option value="3.5">⭐ 3.5 ou mais</option>
+                </select>
+              </div>
+
+              {/* Atividade Recente */}
+              <div className="filter-extra-item">
+                <label>Atividade:</label>
+                <select
+                  className="filter-select-sm"
+                  value={filterActivity}
+                  onChange={(e) => setFilterActivity(e.target.value)}
+                >
+                  <option value="all">Todos os Perfis</option>
+                  <option value="active">🟢 Perfil Ativo (Responde Clientes)</option>
+                  <option value="inactive">Sem Resposta Recente</option>
+                </select>
+              </div>
+            </div>
+          )}
+
+          {/* Barra de Status dos Filtros */}
+          <div className="filter-status-bar">
+            <div>
+              Exibindo <strong>{filteredLeads.length}</strong> de <strong>{leads.length}</strong> leads
+              {activeFiltersCount > 0 && (
+                <span className="filter-applied-badge">
+                  {activeFiltersCount} {activeFiltersCount === 1 ? 'filtro ativo' : 'filtros ativos'}
+                </span>
+              )}
+            </div>
+            {filteredLeads.length === 0 && leads.length > 0 && (
+              <span style={{ color: '#f87171', fontWeight: '600' }}>
+                Nenhum lead encontrado com a combinação atual de filtros.
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
 
       {/* VIEW: NOVA BUSCA */}
       {activeTab === 'search' && (
@@ -1051,44 +1380,28 @@ export default function App() {
       {activeTab === 'table' && (
         <div className="table-container">
           <div className="table-toolbar">
-            <div className="table-filters">
-              <input
-                type="text"
-                className="form-input"
-                placeholder="Buscar por nome, nicho ou cidade..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                style={{ width: '280px' }}
-              />
-
-              <select
-                className="form-select"
-                value={filterTier}
-                onChange={(e) => setFilterTier(e.target.value)}
-              >
-                <option value="all">Todos os Scores</option>
-                <option value="hot">🔥 Quentes (85+)</option>
-                <option value="warm">⚡ Promissores (60-84)</option>
-                <option value="cold">❄️ Frios (&lt;60)</option>
-              </select>
-
-              <select
-                className="form-select"
-                value={filterSite}
-                onChange={(e) => setFilterSite(e.target.value)}
-              >
-                <option value="all">Todos os Sites</option>
-                <option value="none">Sem Site</option>
-                <option value="social_media">Usa Rede Social</option>
-                <option value="insecure">Inseguro / Sem HTTPS</option>
-                <option value="outdated">Desatualizado / Lento</option>
-              </select>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '0.92rem', color: '#fff', fontWeight: '700' }}>
+                Tabela de Leads
+              </span>
+              <span className="badge-count">{filteredLeads.length}</span>
             </div>
 
-            <div style={{ fontSize: '0.84rem', color: '#94a3b8' }}>
-              Mostrando <strong>{filteredLeads.length}</strong> empresas
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{ fontSize: '0.84rem', color: '#94a3b8' }}>
+                Mostrando <strong>{filteredLeads.length}</strong> de <strong>{leads.length}</strong> empresas
+              </div>
+              <button
+                className="btn-secondary"
+                style={{ padding: '6px 12px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '6px' }}
+                onClick={exportCSV}
+                title="Exportar dados filtrados para Excel/CSV"
+              >
+                <Download size={14} /> Exportar CSV
+              </button>
             </div>
           </div>
+
 
           <table className="leads-table">
             <thead>
