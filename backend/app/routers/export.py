@@ -8,10 +8,12 @@ from app.models import Lead
 router = APIRouter(prefix="/api/export", tags=["Export"])
 
 @router.get("/csv")
-def export_leads_csv(crm_status: str = None, db: Session = Depends(get_db)):
+def export_leads_csv(crm_status: str = None, search_id: str = None, db: Session = Depends(get_db)):
     query = db.query(Lead)
     if crm_status:
         query = query.filter(Lead.crm_status == crm_status)
+    if search_id:
+        query = query.filter(Lead.search_id == search_id)
     leads = query.order_by(Lead.lead_score.desc()).all()
 
     output = io.StringIO()

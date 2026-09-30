@@ -9,6 +9,7 @@ class SearchRequest(BaseModel):
     limit: int = Field(default=20, ge=1, le=100, description="Quantidade de resultados desejados")
     google_api_key: Optional[str] = Field(None, description="API Key opcional do Google Places")
     deep_audit: bool = Field(default=True, description="Auditar sites das empresas encontradas")
+    skip_existing: bool = Field(default=False, description="Pular leads que já existem na base")
 
 class SearchResponse(BaseModel):
     id: str
@@ -16,10 +17,24 @@ class SearchResponse(BaseModel):
     niche: str
     location: str
     total_found: int
+    new_leads: Optional[int] = 0
+    existing_leads: Optional[int] = 0
+    lead_count: Optional[int] = 0
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+class SearchResultResponse(BaseModel):
+    search_id: str
+    query: str
+    niche: str
+    location: str
+    total_found: int
+    new_count: int
+    existing_count: int
+    leads: List["LeadResponse"]
+
 
 # Site Audit Schemas
 class SiteAuditResponse(BaseModel):
@@ -59,6 +74,7 @@ class LeadResponse(BaseModel):
     score_breakdown: Optional[Dict[str, Any]] = None
     crm_status: str
     notes: Optional[str] = None
+    is_existing: Optional[bool] = False
     created_at: datetime
     updated_at: datetime
     audits: List[SiteAuditResponse] = []
@@ -71,6 +87,10 @@ class LeadUpdateStatus(BaseModel):
 
 class LeadUpdateNotes(BaseModel):
     notes: str
+
+class BatchDeleteRequest(BaseModel):
+    lead_ids: List[str]
+
 
 # Pitch Schemas
 class PitchResponse(BaseModel):

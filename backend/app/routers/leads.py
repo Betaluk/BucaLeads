@@ -3,8 +3,9 @@ from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
 from app.database import get_db
 from app.models import Lead, SiteAudit
-from app.schemas import LeadResponse, LeadUpdateStatus, LeadUpdateNotes, PitchResponse
+from app.schemas import LeadResponse, LeadUpdateStatus, LeadUpdateNotes, PitchResponse, BatchDeleteRequest
 from app.services.pitch import PitchGenerator
+from app.services.dedup import cleanup_duplicate_leads
 
 router = APIRouter(prefix="/api/leads", tags=["Leads & CRM"])
 
@@ -36,13 +37,20 @@ def get_leads(
     if only_mobile:
         query = query.filter(Lead.phone_type == "mobile")
 
-    # Sempre ordenar pelo maior Lead Score
-    leads = query.order_by(Lead.lead_score.desc(), Lead.created_at.desc()).all()
+    # Sempre ordenar pelo maior Lead Score e depois pela data de atualização
+    leads = query.order_by(Lead.lead_score.desc(), Lead.updated_at.desc(), Lead.created_at.desc()).all()
     return leads
 
 @router.get("/stats")
-def get_lead_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
-    leads = db.query(Lead).all()
+def get_lead_stats(
+    search_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    query = db.query(Lead)
+    if search_id:
+        query = query.filter(Lead.search_id == search_id)
+
+    leads = query.all()
     total = len(leads)
     hot = sum(1 for l in leads if l.score_tier == "hot")
     warm = sum(1 for l in leads if l.score_tier == "warm")
@@ -68,6 +76,32 @@ def get_lead_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
         "with_mobile": with_mobile,
         "by_status": by_status
     }
+
+@router.post("/cleanup-duplicates")
+def cleanup_duplicates(db: Session = Depends(get_db)):
+    """Varre o banco e funde duplicatas mantendo o status do funil e notas."""
+    result = cleanup_duplicate_leads(db)
+    return {
+        "message": f"Limpeza concluída! {result['removed_leads']} leads duplicados foram consolidados.",
+        "merged_groups": result["merged_groups"],
+        "removed_leads": result["removed_leads"],
+        "remaining_leads": result["remaining_leads"]
+    }
+
+@router.post("/batch-delete")
+def batch_delete_leads(body: BatchDeleteRequest, db: Session = Depends(get_db)):
+    """Exclui múltiplos leads em lote."""
+    if not body.lead_ids:
+        return {"deleted_count": 0}
+
+    leads = db.query(Lead).filter(Lead.id.in_(body.lead_ids)).all()
+    count = 0
+    for lead in leads:
+        db.delete(lead)
+        count += 1
+    db.commit()
+
+    return {"message": f"{count} leads excluídos com sucesso", "deleted_count": count}
 
 @router.get("/{lead_id}", response_model=LeadResponse)
 def get_lead(lead_id: str, db: Session = Depends(get_db)):
@@ -108,9 +142,10 @@ def delete_lead(lead_id: str, db: Session = Depends(get_db)):
     if not lead:
         raise HTTPException(status_code=404, detail="Lead não encontrado")
 
+    name = lead.business_name
     db.delete(lead)
     db.commit()
-    return {"message": "Lead excluído com sucesso", "id": lead_id}
+    return {"message": f"Lead '{name}' excluído com sucesso", "id": lead_id}
 
 @router.get("/{lead_id}/pitch", response_model=PitchResponse)
 def generate_lead_pitch(lead_id: str, db: Session = Depends(get_db)):

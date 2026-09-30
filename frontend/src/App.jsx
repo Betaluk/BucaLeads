@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Search as SearchIcon,
   Flame,
@@ -22,7 +22,17 @@ import {
   Info,
   Clock,
   Trash2,
-  Edit3
+  Edit3,
+  RefreshCw,
+  Sparkles,
+  Database,
+  ArrowRight,
+  AlertTriangle,
+  RotateCcw,
+  Layers,
+  Calendar,
+  CheckCircle2,
+  Save
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -36,11 +46,16 @@ const KANBAN_COLUMNS = [
 ];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('kanban'); // 'kanban', 'table', 'search'
+  const [activeTab, setActiveTab] = useState('kanban'); // 'kanban', 'table', 'history', 'search'
   const [leads, setLeads] = useState([]);
   const [stats, setStats] = useState(null);
+  const [searchHistory, setSearchHistory] = useState([]);
+  const [selectedSearchId, setSelectedSearchId] = useState('all');
+
   const [loading, setLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [cleanupLoading, setCleanupLoading] = useState(false);
 
   // Formulário de busca
   const [niche, setNiche] = useState('Clínica Odontológica');
@@ -48,6 +63,7 @@ export default function App() {
   const [limit, setLimit] = useState(15);
   const [googleApiKey, setGoogleApiKey] = useState('');
   const [deepAudit, setDeepAudit] = useState(true);
+  const [skipExisting, setSkipExisting] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Filtros de Tabela
@@ -57,34 +73,78 @@ export default function App() {
 
   // Modais
   const [selectedLead, setSelectedLead] = useState(null);
+  const [editNotes, setEditNotes] = useState('');
+  const [savingNotes, setSavingNotes] = useState(false);
   const [pitchData, setPitchData] = useState(null);
   const [pitchLoading, setPitchLoading] = useState(false);
   const [copiedPitch, setCopiedPitch] = useState(false);
 
-  // Carregar dados iniciais
+  // Modal de Confirmação de Exclusão
+  const [deleteModal, setDeleteModal] = useState({
+    isOpen: false,
+    type: 'lead', // 'lead' | 'search'
+    id: null,
+    title: '',
+    deleteLeadsOption: false
+  });
+
+  const [notification, setNotification] = useState(null);
+  const retryCountRef = useRef(0);
+
+  const showNotification = (msg, type = 'success') => {
+    setNotification({ msg, type });
+    setTimeout(() => setNotification(null), 6000);
+  };
+
+  // Carregar dados iniciais e histórico
   useEffect(() => {
-    fetchLeads();
-    fetchStats();
+    loadAllData('all');
   }, []);
 
-  const fetchLeads = async () => {
+  const loadAllData = async (searchId = selectedSearchId) => {
+    setSyncing(true);
+    await Promise.all([
+      fetchLeads(searchId),
+      fetchStats(searchId),
+      fetchHistory()
+    ]);
+    setSyncing(false);
+  };
+
+  const fetchLeads = async (searchId = selectedSearchId) => {
     try {
       setLoading(true);
-      const res = await fetch(`${API_BASE}/api/leads`);
+      const url =
+        searchId && searchId !== 'all'
+          ? `${API_BASE}/api/leads?search_id=${searchId}`
+          : `${API_BASE}/api/leads`;
+      const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         setLeads(data);
+        retryCountRef.current = 0;
+      } else {
+        throw new Error('Falha na resposta do servidor');
       }
     } catch (err) {
-      console.error('Erro ao buscar leads:', err);
+      console.warn('Backend iniciando ou indisponível:', err);
+      // Tentativa de reconexão automática se for na inicialização
+      if (retryCountRef.current < 4) {
+        retryCountRef.current += 1;
+        setTimeout(() => fetchLeads(searchId), 2000 * retryCountRef.current);
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  const fetchStats = async () => {
+  const fetchStats = async (searchId = selectedSearchId) => {
     try {
-      const res = await fetch(`${API_BASE}/api/leads/stats`);
+      const url =
+        searchId && searchId !== 'all'
+          ? `${API_BASE}/api/leads/stats?search_id=${searchId}`
+          : `${API_BASE}/api/leads/stats`;
+      const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         setStats(data);
@@ -94,11 +154,21 @@ export default function App() {
     }
   };
 
-  const [notification, setNotification] = useState(null);
+  const fetchHistory = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/search/history`);
+      if (res.ok) {
+        const data = await res.json();
+        setSearchHistory(data);
+      }
+    } catch (err) {
+      console.error('Erro ao buscar histórico:', err);
+    }
+  };
 
-  const showNotification = (msg, type = 'success') => {
-    setNotification({ msg, type });
-    setTimeout(() => setNotification(null), 5000);
+  const handleSearchFilterChange = async (searchId) => {
+    setSelectedSearchId(searchId);
+    await Promise.all([fetchLeads(searchId), fetchStats(searchId)]);
   };
 
   const handleSearchSubmit = async (e) => {
@@ -108,11 +178,12 @@ export default function App() {
     try {
       setSearchLoading(true);
       const payload = {
-        niche,
-        location,
+        niche: niche.trim(),
+        location: location.trim(),
         limit: Number(limit),
         google_api_key: googleApiKey.trim() || null,
-        deep_audit: deepAudit
+        deep_audit: deepAudit,
+        skip_existing: skipExisting
       };
 
       const res = await fetch(`${API_BASE}/api/search`, {
@@ -122,12 +193,27 @@ export default function App() {
       });
 
       if (res.ok) {
-        const newLeads = await res.json();
-        await fetchLeads();
-        await fetchStats();
+        const result = await res.json();
+        const total = result.total_found ?? (result.leads ? result.leads.length : 0);
+        const newCount = result.new_count ?? total;
+        const existingCount = result.existing_count ?? 0;
+
+        setSelectedSearchId('all');
+        await loadAllData('all');
         setActiveTab('kanban');
-        if (newLeads.length > 0) {
-          showNotification(`Sucesso! ${newLeads.length} novos leads minerados e organizados pelo Lead Score.`, 'success');
+
+        if (total > 0) {
+          if (existingCount > 0) {
+            showNotification(
+              `Busca concluída! ${total} empresas mineradas: ${newCount} novos leads adicionados e ${existingCount} já cadastrados na sua base (status e notas comerciais preservados).`,
+              'success'
+            );
+          } else {
+            showNotification(
+              `Sucesso! ${newCount} novos leads minerados e organizados pelo Lead Score.`,
+              'success'
+            );
+          }
         } else {
           showNotification('A busca não encontrou novas empresas nessa localidade.', 'info');
         }
@@ -153,24 +239,124 @@ export default function App() {
         setLeads((prev) =>
           prev.map((l) => (l.id === leadId ? { ...l, crm_status: newStatus } : l))
         );
-        fetchStats();
+        fetchStats(selectedSearchId);
       }
     } catch (err) {
       console.error('Erro ao atualizar status:', err);
     }
   };
 
-  const deleteLead = async (leadId) => {
-    if (!confirm('Deseja realmente remover este lead?')) return;
+  const openDeleteLeadModal = (lead, e) => {
+    if (e) e.stopPropagation();
+    setDeleteModal({
+      isOpen: true,
+      type: 'lead',
+      id: lead.id,
+      title: lead.business_name,
+      deleteLeadsOption: false
+    });
+  };
+
+  const openDeleteSearchModal = (search, e) => {
+    if (e) e.stopPropagation();
+    setDeleteModal({
+      isOpen: true,
+      type: 'search',
+      id: search.id,
+      title: `${search.niche} em ${search.location}`,
+      deleteLeadsOption: false
+    });
+  };
+
+  const executeDelete = async () => {
+    const { type, id, title, deleteLeadsOption } = deleteModal;
+    setDeleteModal({ ...deleteModal, isOpen: false });
+
     try {
-      const res = await fetch(`${API_BASE}/api/leads/${leadId}`, { method: 'DELETE' });
-      if (res.ok) {
-        setLeads((prev) => prev.filter((l) => l.id !== leadId));
-        if (selectedLead?.id === leadId) setSelectedLead(null);
-        fetchStats();
+      if (type === 'lead') {
+        const res = await fetch(`${API_BASE}/api/leads/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+          setLeads((prev) => prev.filter((l) => l.id !== id));
+          if (selectedLead?.id === id) setSelectedLead(null);
+          await fetchStats(selectedSearchId);
+          showNotification(`Lead "${title}" removido da sua base.`, 'info');
+        } else {
+          showNotification('Erro ao excluir o lead.', 'error');
+        }
+      } else if (type === 'search') {
+        const res = await fetch(
+          `${API_BASE}/api/search/${id}?delete_leads=${deleteLeadsOption ? 'true' : 'false'}`,
+          { method: 'DELETE' }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          if (selectedSearchId === id) setSelectedSearchId('all');
+          await loadAllData('all');
+          showNotification(
+            `Busca excluída com sucesso.${data.deleted_leads > 0 ? ` (${data.deleted_leads} leads não contatados removidos)` : ''}`,
+            'info'
+          );
+        } else {
+          showNotification('Erro ao excluir registro de busca.', 'error');
+        }
       }
     } catch (err) {
-      console.error('Erro ao deletar lead:', err);
+      console.error('Erro na exclusão:', err);
+      showNotification('Erro ao processar exclusão.', 'error');
+    }
+  };
+
+  const handleCleanupDuplicates = async () => {
+    try {
+      setCleanupLoading(true);
+      const res = await fetch(`${API_BASE}/api/leads/cleanup-duplicates`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        await loadAllData(selectedSearchId);
+        if (data.removed_leads > 0) {
+          showNotification(
+            `Limpeza concluída! ${data.removed_leads} duplicatas foram consolidadas com sucesso (status do funil e notas preservados). Restam ${data.remaining_leads} leads únicos.`,
+            'success'
+          );
+        } else {
+          showNotification('Sua base já está 100% limpa! Nenhuma duplicata encontrada.', 'info');
+        }
+      } else {
+        showNotification('Erro ao executar limpeza de duplicados.', 'error');
+      }
+    } catch (err) {
+      console.error('Erro ao limpar duplicados:', err);
+      showNotification('Falha ao comunicar com o servidor.', 'error');
+    } finally {
+      setCleanupLoading(false);
+    }
+  };
+
+  const openLeadDetailsModal = (lead) => {
+    setSelectedLead(lead);
+    setEditNotes(lead.notes || '');
+  };
+
+  const saveLeadNotes = async () => {
+    if (!selectedLead) return;
+    try {
+      setSavingNotes(true);
+      const res = await fetch(`${API_BASE}/api/leads/${selectedLead.id}/notes`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notes: editNotes })
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setLeads((prev) => prev.map((l) => (l.id === updated.id ? { ...l, notes: updated.notes } : l)));
+        setSelectedLead((prev) => (prev ? { ...prev, notes: updated.notes } : null));
+        showNotification('Notas comerciais salvas com sucesso!', 'success');
+      }
+    } catch (err) {
+      console.error('Erro ao salvar notas:', err);
+      showNotification('Erro ao salvar anotação.', 'error');
+    } finally {
+      setSavingNotes(false);
     }
   };
 
@@ -198,7 +384,30 @@ export default function App() {
   };
 
   const exportCSV = () => {
-    window.open(`${API_BASE}/api/export/csv`, '_blank');
+    const url =
+      selectedSearchId && selectedSearchId !== 'all'
+        ? `${API_BASE}/api/export/csv?search_id=${selectedSearchId}`
+        : `${API_BASE}/api/export/csv`;
+    window.open(url, '_blank');
+  };
+
+  const rerunSearch = (searchItem) => {
+    setNiche(searchItem.niche);
+    setLocation(searchItem.location);
+    setActiveTab('search');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const viewSearchInKanban = (searchId) => {
+    setSelectedSearchId(searchId);
+    handleSearchFilterChange(searchId);
+    setActiveTab('kanban');
+  };
+
+  const viewSearchInTable = (searchId) => {
+    setSelectedSearchId(searchId);
+    handleSearchFilterChange(searchId);
+    setActiveTab('table');
   };
 
   // Filtragem de Leads
@@ -220,15 +429,15 @@ export default function App() {
       <header className="app-header">
         <div className="logo-area">
           <div className="logo-icon">
-            <Building2 size={24} />
+            <Building2 size={24} color="#ffffff" />
           </div>
           <div className="logo-text">
             <h1>BucaLeads</h1>
-            <span>Smart Google Prospector</span>
+            <span>Smart Google Prospector & CRM</span>
           </div>
         </div>
 
-        {/* Navegação */}
+        {/* Navegação Principal */}
         <div className="nav-tabs">
           <button
             id="tab-kanban"
@@ -245,6 +454,26 @@ export default function App() {
             <ListFilter size={16} /> Tabela de Leads
           </button>
           <button
+            id="tab-history"
+            className={`nav-tab-btn ${activeTab === 'history' ? 'active' : ''}`}
+            onClick={() => setActiveTab('history')}
+          >
+            <Clock size={16} /> Histórico de Buscas
+            {searchHistory.length > 0 && (
+              <span
+                style={{
+                  background: 'rgba(255,255,255,0.15)',
+                  padding: '1px 6px',
+                  borderRadius: '10px',
+                  fontSize: '0.72rem',
+                  marginLeft: '4px'
+                }}
+              >
+                {searchHistory.length}
+              </span>
+            )}
+          </button>
+          <button
             id="tab-search"
             className={`nav-tab-btn ${activeTab === 'search' ? 'active' : ''}`}
             onClick={() => setActiveTab('search')}
@@ -253,9 +482,53 @@ export default function App() {
           </button>
         </div>
 
-        <button className="btn-icon-subtle" onClick={exportCSV} title="Exportar CSV para Excel">
-          <Download size={18} />
-        </button>
+        {/* Ações Rápidas no Header */}
+        <div className="header-actions-area">
+          {/* Seletor de Busca / Campanha */}
+          <select
+            className="search-filter-dropdown"
+            value={selectedSearchId}
+            onChange={(e) => handleSearchFilterChange(e.target.value)}
+            title="Filtrar base por busca realizada"
+          >
+            <option value="all">🌐 Todas as Buscas ({leads.length} leads)</option>
+            {searchHistory.map((s) => (
+              <option key={s.id} value={s.id}>
+                📍 {s.niche} em {s.location} ({s.lead_count ?? s.total_found} leads)
+              </option>
+            ))}
+          </select>
+
+          {/* Botão de Limpeza de Duplicados */}
+          <button
+            className="btn-tool"
+            onClick={handleCleanupDuplicates}
+            disabled={cleanupLoading}
+            title="Consolidar e limpar possíveis leads duplicados"
+          >
+            {cleanupLoading ? (
+              <div className="pulse-spinner" style={{ width: '14px', height: '14px' }} />
+            ) : (
+              <Sparkles size={15} />
+            )}
+            Limpar Duplicados
+          </button>
+
+          {/* Botão Sincronizar / Atualizar */}
+          <button
+            className="btn-icon-subtle"
+            onClick={() => loadAllData(selectedSearchId)}
+            title="Atualizar dados do banco local"
+            disabled={syncing}
+          >
+            <RefreshCw size={18} className={syncing ? 'pulse-spinner' : ''} />
+          </button>
+
+          {/* Botão Exportar CSV */}
+          <button className="btn-icon-subtle" onClick={exportCSV} title="Exportar CSV para Excel">
+            <Download size={18} />
+          </button>
+        </div>
       </header>
 
       {/* Notificação Toast */}
@@ -294,7 +567,14 @@ export default function App() {
           <span>{notification.msg}</span>
           <button
             onClick={() => setNotification(null)}
-            style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', fontWeight: 'bold' }}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: 'inherit',
+              cursor: 'pointer',
+              fontWeight: 'bold',
+              padding: '0 8px'
+            }}
           >
             ✕
           </button>
@@ -309,7 +589,7 @@ export default function App() {
           </div>
           <div className="stat-info">
             <div className="stat-value">{stats ? stats.total : leads.length}</div>
-            <div className="stat-label">Total de Leads</div>
+            <div className="stat-label">Total de Leads Ativos</div>
           </div>
         </div>
 
@@ -352,8 +632,8 @@ export default function App() {
               <SearchIcon size={22} className="text-cyan" /> Minerar Empresas no Google
             </h2>
             <p>
-              Defina o segmento e localidade. O motor pesquisará no Google, auditará a presença
-              digital de cada empresa e calculará a pontuação automaticamente.
+              Defina o segmento e localidade. O motor pesquisará no Google Maps, verificará se a empresa
+              já existe na sua base para não duplicar dados, auditará o site e calculará a pontuação automaticamente.
             </p>
           </div>
 
@@ -365,7 +645,7 @@ export default function App() {
                   id="input-niche"
                   type="text"
                   className="form-input"
-                  placeholder="Ex: Clínica Odontológica, Academia..."
+                  placeholder="Ex: Clínica Odontológica, Academia, Advogado..."
                   value={niche}
                   onChange={(e) => setNiche(e.target.value)}
                   required
@@ -418,6 +698,36 @@ export default function App() {
               </button>
             </div>
 
+            {/* Configurações de Inteligência de Base */}
+            <div
+              style={{
+                marginTop: '16px',
+                padding: '14px 18px',
+                background: 'rgba(15, 23, 42, 0.6)',
+                borderRadius: '12px',
+                border: '1px solid var(--border-subtle)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#38bdf8', fontSize: '0.86rem', fontWeight: '700' }}>
+                <Database size={16} /> Inteligência de Base e Deduplicação Ativa
+              </div>
+              <p style={{ fontSize: '0.8rem', color: '#94a3b8', margin: 0 }}>
+                O sistema identifica automaticamente se uma empresa já foi cadastrada anteriormente por telefone, domínio ou nome.
+                O status atual no seu funil e suas anotações nunca serão perdidos.
+              </p>
+              <label className="checkbox-label" style={{ marginTop: '4px' }}>
+                <input
+                  type="checkbox"
+                  checked={skipExisting}
+                  onChange={(e) => setSkipExisting(e.target.checked)}
+                />
+                <span>Pular leads já existentes na base (trazer somente empresas novas)</span>
+              </label>
+            </div>
+
             <div className="advanced-toggle">
               <span
                 onClick={() => setShowAdvanced(!showAdvanced)}
@@ -453,96 +763,287 @@ export default function App() {
         </div>
       )}
 
-      {/* VIEW: KANBAN CRM */}
-      {activeTab === 'kanban' && (
-        <div className="kanban-board">
-          {KANBAN_COLUMNS.map((col) => {
-            const colLeads = filteredLeads.filter((l) => l.crm_status === col.id);
-            return (
-              <div key={col.id} className="kanban-column">
-                <div className="kanban-column-header">
-                  <div className="kanban-column-title">
-                    <span style={{ color: col.color }}>●</span>
-                    {col.label}
+      {/* VIEW: HISTÓRICO DE BUSCAS */}
+      {activeTab === 'history' && (
+        <div className="history-container">
+          <div className="history-header">
+            <div>
+              <h2>
+                <Clock size={22} className="text-cyan" /> Histórico de Buscas & Campanhas
+              </h2>
+              <p>
+                Acesse todas as buscas realizadas. Filtre o funil por campanha, repita buscas antigas
+                ou remova buscas obsoletas.
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+              <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
+                Total: <strong>{searchHistory.length}</strong> buscas salvas
+              </span>
+              <button className="btn-secondary" onClick={() => setActiveTab('search')}>
+                <SearchIcon size={16} /> Nova Busca
+              </button>
+            </div>
+          </div>
+
+          <div className="history-grid">
+            {searchHistory.map((item) => (
+              <div key={item.id} className="history-card">
+                <div className="history-card-header">
+                  <div>
+                    <div className="history-query-title">{item.niche}</div>
+                    <div style={{ fontSize: '0.88rem', color: '#38bdf8' }}>📍 {item.location}</div>
+                    <div className="history-date">
+                      <Calendar size={12} />
+                      {new Date(item.created_at).toLocaleDateString('pt-BR', {
+                        day: '2-digit',
+                        month: '2-digit',
+                        year: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })}
+                    </div>
                   </div>
-                  <span className="badge-count">{colLeads.length}</span>
+                  <button
+                    className="btn-danger-subtle"
+                    onClick={(e) => openDeleteSearchModal(item, e)}
+                    title="Excluir do Histórico"
+                  >
+                    <Trash2 size={15} />
+                  </button>
                 </div>
 
-                <div className="kanban-cards-list">
-                  {colLeads.map((lead) => (
-                    <div key={lead.id} className="lead-card">
-                      <div className="lead-card-header">
-                        <div className="lead-card-title">{lead.business_name}</div>
-                        <span className={`badge-score ${lead.score_tier}`}>
-                          <Flame size={12} /> {lead.lead_score} pts
-                        </span>
-                      </div>
-
-                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                        <span className={`badge-site ${lead.website_status}`}>
-                          {lead.website_status === 'none' && 'Sem Site'}
-                          {lead.website_status === 'social_media' && 'Rede Social'}
-                          {lead.website_status === 'insecure' && 'Sem HTTPS / Falha'}
-                          {lead.website_status === 'outdated' && 'Lento / Não Mobile'}
-                          {lead.website_status === 'healthy' && 'Site Ativo'}
-                        </span>
-                        <span className={`badge-source ${lead.source === 'google_places_api' ? 'api' : 'scraper'}`}>
-                          {lead.source === 'google_places_api' ? 'API' : 'Scraper'}
-                        </span>
-                      </div>
-
-                      <div className="lead-card-metrics">
-                        <div className="rating-stars">
-                          <Star size={13} fill="#fbbf24" /> {lead.rating?.toFixed(1) || '0.0'}
-                        </div>
-                        <div>({lead.review_count} avaliações)</div>
-                      </div>
-
-                      {lead.phone && (
-                        <div style={{ fontSize: '0.8rem', color: '#94a3b8', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          <Phone size={12} /> {lead.phone}
-                        </div>
-                      )}
-
-                      <div className="lead-card-actions">
-                        <button
-                          className="btn-pitch"
-                          onClick={() => openPitchModal(lead)}
-                          title="Gerar Pitch e Enviar WhatsApp"
-                        >
-                          <MessageCircle size={14} /> Abordar
-                        </button>
-                        <button
-                          className="btn-icon-subtle"
-                          onClick={() => setSelectedLead(lead)}
-                          title="Ver Detalhes e Auditoria"
-                        >
-                          <Info size={14} />
-                        </button>
-                        <select
-                          className="form-select"
-                          style={{ padding: '6px', fontSize: '0.75rem', width: 'auto' }}
-                          value={lead.crm_status}
-                          onChange={(e) => updateLeadStatus(lead.id, e.target.value)}
-                        >
-                          {KANBAN_COLUMNS.map((c) => (
-                            <option key={c.id} value={c.id}>
-                              ➔ {c.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
+                <div className="history-metrics-row">
+                  <div className="history-metric-box">
+                    <div className="history-metric-value">{item.lead_count ?? item.total_found}</div>
+                    <div className="history-metric-label">No CRM</div>
+                  </div>
+                  <div className="history-metric-box">
+                    <div className="history-metric-value" style={{ color: '#34d399' }}>
+                      {item.new_leads || item.total_found || 0}
                     </div>
-                  ))}
-                  {colLeads.length === 0 && (
-                    <div style={{ padding: '24px', textAlign: 'center', color: '#64748b', fontSize: '0.84rem' }}>
-                      Nenhum lead nesta coluna
+                    <div className="history-metric-label">Novos</div>
+                  </div>
+                  <div className="history-metric-box">
+                    <div className="history-metric-value" style={{ color: '#a78bfa' }}>
+                      {item.existing_leads || 0}
                     </div>
-                  )}
+                    <div className="history-metric-label">Na Base</div>
+                  </div>
+                </div>
+
+                <div className="history-actions">
+                  <button
+                    className="btn-history-action"
+                    onClick={() => viewSearchInKanban(item.id)}
+                    title="Filtrar e abrir este lote no Funil Kanban"
+                  >
+                    <Columns size={14} /> Ver no Funil
+                  </button>
+                  <button
+                    className="btn-history-action"
+                    onClick={() => viewSearchInTable(item.id)}
+                    title="Ver este lote na Tabela"
+                  >
+                    <ListFilter size={14} /> Ver na Tabela
+                  </button>
+                  <button
+                    className="btn-history-action"
+                    onClick={() => rerunSearch(item)}
+                    title="Refazer esta busca"
+                  >
+                    <RotateCcw size={14} /> Refazer
+                  </button>
                 </div>
               </div>
-            );
-          })}
+            ))}
+
+            {searchHistory.length === 0 && (
+              <div
+                style={{
+                  gridColumn: '1 / -1',
+                  textAlign: 'center',
+                  padding: '48px',
+                  background: 'var(--bg-card)',
+                  borderRadius: '16px',
+                  border: '1px solid var(--border-subtle)',
+                  color: '#64748b'
+                }}
+              >
+                <Clock size={36} style={{ marginBottom: '12px', opacity: 0.5 }} />
+                <h3>Nenhum histórico de busca encontrado</h3>
+                <p style={{ marginTop: '6px' }}>Faça sua primeira busca para minerar e organizar leads no funil.</p>
+                <button
+                  className="btn-primary"
+                  style={{ marginTop: '16px', display: 'inline-flex' }}
+                  onClick={() => setActiveTab('search')}
+                >
+                  <SearchIcon size={16} /> Fazer Primeira Busca
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* VIEW: KANBAN CRM */}
+      {activeTab === 'kanban' && (
+        <div>
+          {/* Banner informativo quando filtrado por busca */}
+          {selectedSearchId !== 'all' && (
+            <div
+              style={{
+                marginBottom: '16px',
+                padding: '10px 16px',
+                background: 'rgba(59, 130, 246, 0.12)',
+                border: '1px solid rgba(59, 130, 246, 0.3)',
+                borderRadius: '10px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                fontSize: '0.86rem'
+              }}
+            >
+              <span>
+                Filtrando pelo lote:{' '}
+                <strong>
+                  {searchHistory.find((s) => s.id === selectedSearchId)?.niche || 'Busca selecionada'}
+                </strong>
+              </span>
+              <button
+                className="btn-secondary"
+                style={{ padding: '4px 10px', fontSize: '0.78rem' }}
+                onClick={() => handleSearchFilterChange('all')}
+              >
+                Limpar Filtro (Mostrar Todos)
+              </button>
+            </div>
+          )}
+
+          <div className="kanban-board">
+            {KANBAN_COLUMNS.map((col) => {
+              const colLeads = filteredLeads.filter((l) => l.crm_status === col.id);
+              return (
+                <div key={col.id} className="kanban-column">
+                  <div className="kanban-column-header">
+                    <div className="kanban-column-title">
+                      <span style={{ color: col.color }}>●</span>
+                      {col.label}
+                    </div>
+                    <span className="badge-count">{colLeads.length}</span>
+                  </div>
+
+                  <div className="kanban-cards-list">
+                    {colLeads.map((lead) => (
+                      <div key={lead.id} className="lead-card">
+                        <div className="lead-card-header">
+                          <div className="lead-card-title">{lead.business_name}</div>
+                          <span className={`badge-score ${lead.score_tier}`}>
+                            <Flame size={12} /> {lead.lead_score} pts
+                          </span>
+                        </div>
+
+                        {/* Badges de Situação, Origem e Base */}
+                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                          <span className={`badge-site ${lead.website_status}`}>
+                            {lead.website_status === 'none' && 'Sem Site'}
+                            {lead.website_status === 'social_media' && 'Rede Social'}
+                            {lead.website_status === 'insecure' && 'Sem HTTPS / Falha'}
+                            {lead.website_status === 'outdated' && 'Lento / Não Mobile'}
+                            {lead.website_status === 'healthy' && 'Site Ativo'}
+                          </span>
+                          <span className={`badge-source ${lead.source === 'google_places_api' ? 'api' : 'scraper'}`}>
+                            {lead.source === 'google_places_api' ? 'API' : 'Scraper'}
+                          </span>
+                          {lead.notes && (
+                            <span className="badge-tag new" title={lead.notes}>
+                              <Edit3 size={10} /> Notas
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="lead-card-metrics">
+                          <div className="rating-stars">
+                            <Star size={13} fill="#fbbf24" /> {lead.rating?.toFixed(1) || '0.0'}
+                          </div>
+                          <div>({lead.review_count} avaliações)</div>
+                          {lead.city && <div>• {lead.city}</div>}
+                        </div>
+
+                        {lead.phone && (
+                          <div
+                            style={{
+                              fontSize: '0.8rem',
+                              color: '#94a3b8',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px'
+                            }}
+                          >
+                            <Phone size={12} /> {lead.phone}
+                          </div>
+                        )}
+
+                        <div className="lead-card-actions">
+                          <button
+                            className="btn-pitch"
+                            onClick={() => openPitchModal(lead)}
+                            title="Gerar Pitch e Enviar WhatsApp"
+                          >
+                            <MessageCircle size={14} /> Abordar
+                          </button>
+                          <button
+                            className="btn-icon-subtle"
+                            onClick={() => openLeadDetailsModal(lead)}
+                            title="Ver Detalhes, Auditoria e Anotações"
+                          >
+                            <Info size={14} />
+                          </button>
+                          <button
+                            className="btn-danger-subtle"
+                            onClick={(e) => openDeleteLeadModal(lead, e)}
+                            title="Excluir Lead da Base"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+
+                        {/* Seletor Dedicado de Movimentação no Funil (100% contido no card) */}
+                        <div className="lead-stage-selector">
+                          <span className="stage-selector-label">Mover:</span>
+                          <select
+                            className="stage-selector-select"
+                            value={lead.crm_status}
+                            onChange={(e) => updateLeadStatus(lead.id, e.target.value)}
+                            title="Mover lead de etapa no funil"
+                          >
+                            {KANBAN_COLUMNS.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                ➔ {c.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                    ))}
+                    {colLeads.length === 0 && (
+                      <div
+                        style={{
+                          padding: '24px',
+                          textAlign: 'center',
+                          color: '#64748b',
+                          fontSize: '0.84rem'
+                        }}
+                      >
+                        Nenhum lead nesta coluna
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -612,7 +1113,9 @@ export default function App() {
                   </td>
                   <td>
                     <strong style={{ color: '#fff', fontSize: '0.92rem' }}>{lead.business_name}</strong>
-                    <div style={{ fontSize: '0.75rem', color: '#64748b' }}>Origem: {lead.source}</div>
+                    <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                      Origem: {lead.source} {lead.notes ? '• 📝 Possui notas' : ''}
+                    </div>
                   </td>
                   <td>
                     <div>{lead.niche}</div>
@@ -665,16 +1168,15 @@ export default function App() {
                       </button>
                       <button
                         className="btn-icon-subtle"
-                        onClick={() => setSelectedLead(lead)}
-                        title="Ver Detalhes"
+                        onClick={() => openLeadDetailsModal(lead)}
+                        title="Ver Detalhes e Notas"
                       >
                         <Info size={14} />
                       </button>
                       <button
-                        className="btn-icon-subtle"
-                        style={{ color: '#f43f5e' }}
-                        onClick={() => deleteLead(lead.id)}
-                        title="Remover"
+                        className="btn-danger-subtle"
+                        onClick={(e) => openDeleteLeadModal(lead, e)}
+                        title="Excluir Lead"
                       >
                         <Trash2 size={14} />
                       </button>
@@ -748,7 +1250,7 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL: DETALHES DO LEAD & AUDITORIA */}
+      {/* MODAL: DETALHES DO LEAD & ANOTAÇÕES */}
       {selectedLead && !pitchData && (
         <div className="modal-overlay" onClick={() => setSelectedLead(null)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
@@ -767,6 +1269,16 @@ export default function App() {
                 <p style={{ color: '#94a3b8', fontSize: '0.88rem' }}>
                   {selectedLead.niche} • {selectedLead.address || selectedLead.city}
                 </p>
+                <div style={{ fontSize: '0.78rem', color: '#64748b', marginTop: '4px' }}>
+                  Cadastrado em:{' '}
+                  {new Date(selectedLead.created_at).toLocaleDateString('pt-BR', {
+                    day: '2-digit',
+                    month: '2-digit',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  })}
+                </div>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
@@ -791,17 +1303,56 @@ export default function App() {
 
               {selectedLead.website && (
                 <div>
-                  <div style={{ fontSize: '0.8rem', color: '#94a3b8', marginBottom: '4px' }}>Website Cadastrado</div>
+                  <div style={{ fontSize: '0.8rem', color: '#94a3b8', marginBottom: '4px' }}>
+                    Website Cadastrado
+                  </div>
                   <a
                     href={selectedLead.website}
                     target="_blank"
                     rel="noreferrer"
-                    style={{ color: '#38bdf8', wordBreak: 'break-all', display: 'flex', alignItems: 'center', gap: '6px' }}
+                    style={{
+                      color: '#38bdf8',
+                      wordBreak: 'break-all',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px'
+                    }}
                   >
                     {selectedLead.website} <ExternalLink size={14} />
                   </a>
                 </div>
               )}
+
+              {/* Anotações Comerciais (Mini-CRM) */}
+              <div>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: '6px'
+                  }}
+                >
+                  <label style={{ fontSize: '0.85rem', fontWeight: '700', color: '#f1f5f9' }}>
+                    📝 Anotações Comerciais do Lead:
+                  </label>
+                  <button
+                    className="btn-secondary"
+                    style={{ padding: '4px 10px', fontSize: '0.76rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                    onClick={saveLeadNotes}
+                    disabled={savingNotes}
+                  >
+                    <Save size={12} /> {savingNotes ? 'Salvando...' : 'Salvar Anotação'}
+                  </button>
+                </div>
+                <textarea
+                  className="form-input"
+                  style={{ width: '100%', minHeight: '80px', resize: 'vertical', fontSize: '0.86rem' }}
+                  placeholder="Ex: Falei com o proprietário Dr. Carlos. Solicitou orçamento de redesign e contato na próxima terça..."
+                  value={editNotes}
+                  onChange={(e) => setEditNotes(e.target.value)}
+                />
+              </div>
 
               {selectedLead.score_breakdown && (
                 <div>
@@ -830,7 +1381,19 @@ export default function App() {
               )}
             </div>
 
-            <div className="modal-footer">
+            <div className="modal-footer" style={{ justifyContent: 'space-between' }}>
+              <button
+                className="btn-danger-subtle"
+                style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                onClick={() => {
+                  const leadToDelete = selectedLead;
+                  setSelectedLead(null);
+                  openDeleteLeadModal(leadToDelete);
+                }}
+              >
+                <Trash2 size={16} /> Excluir Lead
+              </button>
+
               <button
                 className="btn-pitch"
                 onClick={() => {
@@ -840,6 +1403,70 @@ export default function App() {
                 }}
               >
                 <MessageCircle size={16} /> Gerar Pitch WhatsApp
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE CONFIRMAÇÃO DE EXCLUSÃO (Lead ou Busca) */}
+      {deleteModal.isOpen && (
+        <div className="modal-overlay" onClick={() => setDeleteModal({ ...deleteModal, isOpen: false })}>
+          <div className="modal-content" style={{ maxWidth: '440px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#f43f5e' }}>
+                <AlertTriangle size={20} />
+                {deleteModal.type === 'lead' ? 'Excluir Lead' : 'Excluir Busca do Histórico'}
+              </h3>
+              <button
+                className="btn-icon-subtle"
+                onClick={() => setDeleteModal({ ...deleteModal, isOpen: false })}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="modal-body" style={{ gap: '14px' }}>
+              <p style={{ fontSize: '0.92rem', color: '#e2e8f0', lineHeight: 1.5 }}>
+                Tem certeza que deseja excluir{' '}
+                <strong>"{deleteModal.title}"</strong>?
+              </p>
+
+              {deleteModal.type === 'lead' ? (
+                <p style={{ fontSize: '0.82rem', color: '#94a3b8' }}>
+                  Esta ação removerá este lead, suas auditorias de site e suas anotações comerciais
+                  permanentemente do banco de dados local.
+                </p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <p style={{ fontSize: '0.82rem', color: '#94a3b8' }}>
+                    O registro desta busca será removido do seu histórico de campanhas.
+                  </p>
+                  <label className="checkbox-label" style={{ marginTop: '4px' }}>
+                    <input
+                      type="checkbox"
+                      checked={deleteModal.deleteLeadsOption}
+                      onChange={(e) =>
+                        setDeleteModal({ ...deleteModal, deleteLeadsOption: e.target.checked })
+                      }
+                    />
+                    <span style={{ fontSize: '0.82rem' }}>
+                      Remover também os leads desta busca que ainda estão em "Novos Leads" e sem notas
+                    </span>
+                  </label>
+                </div>
+              )}
+            </div>
+
+            <div className="modal-footer">
+              <button
+                className="btn-secondary"
+                onClick={() => setDeleteModal({ ...deleteModal, isOpen: false })}
+              >
+                Cancelar
+              </button>
+              <button className="btn-danger" onClick={executeDelete}>
+                <Trash2 size={16} /> Confirmar Exclusão
               </button>
             </div>
           </div>

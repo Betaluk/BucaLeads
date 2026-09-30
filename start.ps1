@@ -12,7 +12,7 @@ Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$ScriptDir\ba
 Write-Host "[2/2] Iniciando Frontend React/Vite (Porta 5173)..." -ForegroundColor Yellow
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$ScriptDir\frontend'; npm run dev"
 
-Start-Sleep -Seconds 3
+Start-Sleep -Seconds 5
 
 Write-Host ""
 Write-Host "Abrindo aplicacao no navegador: http://localhost:5173 ..." -ForegroundColor Green

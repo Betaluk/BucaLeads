@@ -15,15 +15,17 @@ class Search(Base):
     niche = Column(String(100), nullable=False)
     location = Column(String(150), nullable=False)
     total_found = Column(Integer, default=0)
+    new_leads = Column(Integer, default=0)
+    existing_leads = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    leads = relationship("Lead", back_populates="search", cascade="all, delete-orphan")
+    leads = relationship("Lead", back_populates="search")
 
 class Lead(Base):
     __tablename__ = "leads"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    search_id = Column(String(36), ForeignKey("searches.id"), nullable=True)
+    search_id = Column(String(36), ForeignKey("searches.id", ondelete="SET NULL"), nullable=True)
     business_name = Column(String(255), nullable=False)
     niche = Column(String(100), nullable=False)
     address = Column(String(255), nullable=True)

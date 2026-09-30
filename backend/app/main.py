@@ -6,12 +6,13 @@ if sys.platform == "win32":
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.database import engine, Base
+from app.database import engine, Base, run_migrations
 from app.models import Search, Lead, SiteAudit
 from app.routers import search, leads, export
 
-# Criar tabelas automaticamente se não existirem
+# Criar tabelas automaticamente se não existirem e rodar migrações
 Base.metadata.create_all(bind=engine)
+run_migrations()
 
 app = FastAPI(
     title="BucaLeads API",

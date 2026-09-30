@@ -12,7 +12,7 @@ start "BucaLeads - Backend" cmd /k "cd backend && venv\Scripts\python.exe -m uvi
 echo [2/2] Iniciando Frontend React/Vite (Porta 5173)...
 start "BucaLeads - Frontend" cmd /k "cd frontend && npm run dev"
 
-timeout /t 3 /nobreak >nul
+timeout /t 5 /nobreak >nul
 echo.
 echo Abrindo aplicacao no navegador: http://localhost:5173 ...
 start http://localhost:5173
