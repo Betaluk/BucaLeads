@@ -35,6 +35,8 @@ import {
   Save
 } from 'lucide-react';
 
+import WhatsAppChat from './components/WhatsAppChat';
+
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 const KANBAN_COLUMNS = [
@@ -45,9 +47,42 @@ const KANBAN_COLUMNS = [
   { id: 'won', label: 'Fechados / Ganhos', color: '#10b981' }
 ];
 
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, errorInfo) {
+    console.error('[BucaLeads ErrorBoundary]', error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: '36px', textAlign: 'center', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '16px', margin: '24px auto', maxWidth: '640px' }}>
+          <h3 style={{ color: '#f87171', fontSize: '1.2rem' }}>Ocorreu um erro ao carregar este módulo</h3>
+          <p style={{ color: '#94a3b8', fontSize: '0.86rem', marginTop: '8px' }}>
+            {this.state.error?.message || 'Erro inesperado'}
+          </p>
+          <button className="btn-primary" style={{ marginTop: '16px', display: 'inline-flex' }} onClick={() => this.setState({ hasError: false })}>
+            Tentar Novamente
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState('kanban'); // 'kanban', 'table', 'history', 'search'
+  const [activeTab, setActiveTab] = useState('kanban'); // 'kanban', 'table', 'history', 'search', 'whatsapp'
+  const [unreadTotal, setUnreadTotal] = useState(0);
+  const [initialWaPhone, setInitialWaPhone] = useState(null);
   const [leads, setLeads] = useState([]);
+
   const [stats, setStats] = useState(null);
   const [searchHistory, setSearchHistory] = useState([]);
   const [selectedSearchId, setSelectedSearchId] = useState('all');
@@ -109,15 +144,29 @@ export default function App() {
     loadAllData('all');
   }, []);
 
+  const fetchUnreadCount = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/whatsapp/unread-count`);
+      if (res.ok) {
+        const data = await res.json();
+        setUnreadTotal(data.unread_total || 0);
+      }
+    } catch (e) {
+      // Ignora silenciosamente se offline
+    }
+  };
+
   const loadAllData = async (searchId = selectedSearchId) => {
     setSyncing(true);
     await Promise.all([
       fetchLeads(searchId),
       fetchStats(searchId),
-      fetchHistory()
+      fetchHistory(),
+      fetchUnreadCount()
     ]);
     setSyncing(false);
   };
+
 
   const fetchLeads = async (searchId = selectedSearchId) => {
     try {
@@ -603,6 +652,16 @@ export default function App() {
           >
             <SearchIcon size={16} /> Nova Busca
           </button>
+          <button
+            id="tab-whatsapp"
+            className={`nav-tab-btn ${activeTab === 'whatsapp' ? 'active' : ''}`}
+            onClick={() => setActiveTab('whatsapp')}
+          >
+            <MessageCircle size={16} /> WhatsApp
+            {unreadTotal > 0 && (
+              <span className="unread-badge-pulse">{unreadTotal}</span>
+            )}
+          </button>
         </div>
 
         {/* Ações Rápidas no Header */}
@@ -952,6 +1011,22 @@ export default function App() {
         </div>
       )}
 
+      {/* VIEW: WHATSAPP MESSENGER & CRM CHAT */}
+      {activeTab === 'whatsapp' && (
+        <ErrorBoundary>
+          <WhatsAppChat
+            leads={leads}
+            onOpenLeadDetail={(lead) => {
+              setSelectedLead(lead);
+              setEditNotes(lead.notes || '');
+            }}
+            onUpdateLeadStatus={updateLeadStatus}
+            initialContactPhone={initialWaPhone}
+            onClearInitialContact={() => setInitialWaPhone(null)}
+            onUnreadCountChange={(count) => setUnreadTotal(count)}
+          />
+        </ErrorBoundary>
+      )}
 
       {/* VIEW: NOVA BUSCA */}
       {activeTab === 'search' && (
@@ -1547,15 +1622,30 @@ export default function App() {
                 {copiedPitch ? 'Copiado!' : 'Copiar Texto'}
               </button>
 
+              {pitchData.phone && (
+                <button
+                  className="btn-primary"
+                  style={{ padding: '10px 18px', display: 'flex', alignItems: 'center', gap: '8px' }}
+                  onClick={() => {
+                    setInitialWaPhone(pitchData.phone);
+                    setPitchData(null);
+                    setActiveTab('whatsapp');
+                  }}
+                >
+                  <MessageCircle size={18} /> Conversar no WhatsApp
+                </button>
+              )}
+
               {pitchData.whatsapp_url && (
                 <a
                   href={pitchData.whatsapp_url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="btn-pitch"
-                  style={{ textDecoration: 'none', padding: '10px 20px', borderRadius: '10px' }}
+                  className="btn-secondary"
+                  style={{ textDecoration: 'none', padding: '10px 16px', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                  title="Abrir no WhatsApp Web externo"
                 >
-                  <MessageCircle size={18} /> Abrir no WhatsApp Web
+                  <ExternalLink size={16} /> Web
                 </a>
               )}
             </div>

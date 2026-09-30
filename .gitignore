@@ -8,9 +8,12 @@ __pycache__/
 *.db
 leads.db
 
-# Node / Frontend
+# Node / Frontend / WhatsApp
 node_modules/
 frontend/node_modules/
+whatsapp-service/node_modules/
+whatsapp-service/auth_info_baileys/
+auth_info_baileys/
 dist/
 frontend/dist/
 .env

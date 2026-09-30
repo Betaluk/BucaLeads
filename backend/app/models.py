@@ -49,6 +49,7 @@ class Lead(Base):
 
     search = relationship("Search", back_populates="leads")
     audits = relationship("SiteAudit", back_populates="lead", cascade="all, delete-orphan")
+    messages = relationship("ChatMessage", back_populates="lead", cascade="all, delete-orphan")
 
 class SiteAudit(Base):
     __tablename__ = "site_audits"
@@ -65,3 +66,20 @@ class SiteAudit(Base):
     audited_at = Column(DateTime, default=datetime.utcnow)
 
     lead = relationship("Lead", back_populates="audits")
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    lead_id = Column(String(36), ForeignKey("leads.id", ondelete="SET NULL"), nullable=True)
+    phone = Column(String(50), nullable=False)
+    direction = Column(String(10), nullable=False, default="outgoing")  # 'incoming' | 'outgoing'
+    sender_name = Column(String(100), nullable=True)
+    content = Column(Text, nullable=False)
+    status = Column(String(20), default="sent")  # 'sent', 'delivered', 'read', 'received'
+    is_read = Column(Boolean, default=False)
+    whatsapp_message_id = Column(String(100), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    lead = relationship("Lead", back_populates="messages")
+

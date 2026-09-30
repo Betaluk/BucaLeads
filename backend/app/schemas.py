@@ -100,3 +100,45 @@ class PitchResponse(BaseModel):
     whatsapp_url: Optional[str] = None
     pitch_text: str
     scenario: str
+
+# WhatsApp Chat Schemas
+class ChatMessageResponse(BaseModel):
+    id: str
+    lead_id: Optional[str] = None
+    phone: str
+    direction: str
+    sender_name: Optional[str] = None
+    content: str
+    status: str
+    is_read: bool
+    whatsapp_message_id: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class SendMessageRequest(BaseModel):
+    phone: str
+    text: str
+    lead_id: Optional[str] = None
+
+class WebhookPayload(BaseModel):
+    whatsapp_message_id: Optional[str] = None
+    phone: str
+    direction: str = "incoming"
+    sender_name: Optional[str] = None
+    content: str
+    status: str = "received"
+    timestamp: Optional[str] = None
+
+class ConversationSummary(BaseModel):
+    phone: str
+    lead_id: Optional[str] = None
+    lead_name: Optional[str] = None
+    lead_niche: Optional[str] = None
+    lead_crm_status: Optional[str] = None
+    unread_count: int = 0
+    last_message: Optional[str] = None
+    last_message_at: Optional[datetime] = None
+    last_message_direction: Optional[str] = None
+

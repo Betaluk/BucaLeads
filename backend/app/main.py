@@ -7,8 +7,8 @@ if sys.platform == "win32":
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, Base, run_migrations
-from app.models import Search, Lead, SiteAudit
-from app.routers import search, leads, export
+from app.models import Search, Lead, SiteAudit, ChatMessage
+from app.routers import search, leads, export, whatsapp
 
 # Criar tabelas automaticamente se não existirem e rodar migrações
 Base.metadata.create_all(bind=engine)
@@ -33,6 +33,8 @@ app.add_middleware(
 app.include_router(search.router)
 app.include_router(leads.router)
 app.include_router(export.router)
+app.include_router(whatsapp.router)
+
 
 @app.get("/")
 def root():
