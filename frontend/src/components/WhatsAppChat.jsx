@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   MessageCircle,
   Send,
@@ -6,26 +6,43 @@ import {
   QrCode,
   RefreshCw,
   LogOut,
-  User,
-  Clock,
-  Check,
-  CheckCheck,
-  Building2,
   Sparkles,
-  ExternalLink,
   Search,
-  Filter,
-  AlertCircle,
   ChevronRight,
-  Smile,
   Zap,
   Info,
-  ShieldCheck
+  ShieldCheck,
+  ArrowLeft,
+  X,
+  CheckCheck
 } from 'lucide-react';
-
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const WS_URL = API_BASE.replace(/^http/, 'ws');
+
+function formatTime(isoString) {
+  if (!isoString) return '';
+  try {
+    const d = new Date(isoString);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return '';
+  }
+}
+
+function formatDateLabel(isoString) {
+  if (!isoString) return '';
+  try {
+    const d = new Date(isoString);
+    const now = Date.now();
+    const diffDays = Math.floor((now - d.getTime()) / (1000 * 60 * 60 * 24));
+    if (diffDays === 0) return 'Hoje';
+    if (diffDays === 1) return 'Ontem';
+    return d.toLocaleDateString([], { day: '2-digit', month: '2-digit' });
+  } catch {
+    return '';
+  }
+}
 
 export default function WhatsAppChat({
   leads = [],
@@ -39,7 +56,6 @@ export default function WhatsAppChat({
   const [waStatus, setWaStatus] = useState('loading'); // 'loading', 'disconnected', 'connecting', 'qr_ready', 'connected', 'offline'
   const [qrCodeUrl, setQrCodeUrl] = useState(null);
   const [connectedUser, setConnectedUser] = useState(null);
-  const [statusMessage, setStatusMessage] = useState('');
   const [connectingAction, setConnectingAction] = useState(false);
 
   // Conversas e Mensagens
@@ -51,7 +67,7 @@ export default function WhatsAppChat({
   const [sending, setSending] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
 
-  // Dropdown Nova Conversa
+  // Modal Nova Conversa
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [newChatSearch, setNewChatSearch] = useState('');
 
@@ -68,8 +84,8 @@ export default function WhatsAppChat({
     scrollToBottom();
   }, [messages]);
 
-  // 1. Checar status da conexão e carregar conversas
-  const checkStatus = async () => {
+  // Checar status da conexão
+  const checkStatus = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/whatsapp/status`);
       if (res.ok) {
@@ -77,16 +93,16 @@ export default function WhatsAppChat({
         setWaStatus(data.status);
         setQrCodeUrl(data.qrCode);
         setConnectedUser(data.user);
-        setStatusMessage(data.message || '');
       } else {
         setWaStatus('offline');
       }
-    } catch (e) {
+    } catch {
       setWaStatus('offline');
     }
-  };
+  }, []);
 
-  const fetchConversations = async () => {
+  // Buscar conversas
+  const fetchConversations = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/whatsapp/conversations`);
       if (res.ok) {
@@ -98,9 +114,10 @@ export default function WhatsAppChat({
     } catch (e) {
       console.error('Erro ao buscar conversas:', e);
     }
-  };
+  }, [onUnreadCountChange]);
 
-  const fetchMessages = async (phone) => {
+  // Buscar mensagens de um telefone
+  const fetchMessages = useCallback(async (phone) => {
     if (!phone) return;
     try {
       setMessagesLoading(true);
@@ -117,34 +134,69 @@ export default function WhatsAppChat({
     } finally {
       setMessagesLoading(false);
     }
-  };
+  }, [fetchConversations]);
 
   // Inicialização e Polling
   useEffect(() => {
-    checkStatus();
-    fetchConversations();
+    let mounted = true;
+    const init = async () => {
+      try {
+        const resStatus = await fetch(`${API_BASE}/api/whatsapp/status`);
+        if (resStatus.ok && mounted) {
+          const data = await resStatus.json();
+          setWaStatus(data.status);
+          setQrCodeUrl(data.qrCode);
+          setConnectedUser(data.user);
+        }
+        const resConv = await fetch(`${API_BASE}/api/whatsapp/conversations`);
+        if (resConv.ok && mounted) {
+          const convData = await resConv.json();
+          setConversations(convData);
+          const totalUnread = convData.reduce((acc, c) => acc + (c.unread_count || 0), 0);
+          if (onUnreadCountChange) onUnreadCountChange(totalUnread);
+        }
+      } catch {
+        if (mounted) setWaStatus('offline');
+      }
+    };
 
-    // Polling a cada 3s caso esteja conectando ou exibindo QR Code
+    init();
+
     pollIntervalRef.current = setInterval(() => {
       checkStatus();
-    }, 3000);
+    }, 4000);
 
     return () => {
+      mounted = false;
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     };
-  }, []);
+  }, [checkStatus, onUnreadCountChange]);
 
   // Selecionar contato inicial se informado pelo Kanban/Tabela
   useEffect(() => {
     if (initialContactPhone) {
       const clean = initialContactPhone.replace(/\D/g, '');
-      setActivePhone(clean);
-      fetchMessages(clean);
-      if (onClearInitialContact) onClearInitialContact();
+      const selectContact = async () => {
+        setActivePhone(clean);
+        await fetchMessages(clean);
+        if (onClearInitialContact) onClearInitialContact();
+      };
+      selectContact();
     }
-  }, [initialContactPhone]);
+  }, [initialContactPhone, fetchMessages, onClearInitialContact]);
 
-  // WebSocket para sincronização em tempo real sem reload
+  // Tecla Escape fecha modal
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && showNewChatModal) {
+        setShowNewChatModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showNewChatModal]);
+
+  // WebSocket para sincronização em tempo real
   useEffect(() => {
     let ws = null;
     let reconnectTimeout = null;
@@ -154,43 +206,36 @@ export default function WhatsAppChat({
         ws = new WebSocket(`${WS_URL}/api/whatsapp/ws`);
         wsRef.current = ws;
 
-        ws.onopen = () => {
-          console.log('[WS] Conectado ao canal em tempo real do WhatsApp');
-        };
-
         ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
             if (data.type === 'new_message') {
               const msg = data.message;
-              // Se a mensagem for da conversa aberta, adiciona na lista
               setActivePhone((currPhone) => {
                 if (currPhone && (msg.phone.endsWith(currPhone.slice(-8)) || currPhone.endsWith(msg.phone.slice(-8)))) {
                   setMessages((prev) => {
                     if (prev.some((m) => m.id === msg.id)) return prev;
                     return [...prev, msg];
                   });
-                  // Marcar como lida se a janela está aberta
                   if (msg.direction === 'incoming') {
                     fetch(`${API_BASE}/api/whatsapp/mark-read/${currPhone}`, { method: 'POST' });
                   }
                 }
                 return currPhone;
               });
-
               fetchConversations();
             } else if (data.type === 'read_receipt') {
               fetchConversations();
             }
           } catch (err) {
-            console.error('[WS] Erro processando mensagem:', err);
+            console.error('[WS] Erro processando evento:', err);
           }
         };
 
         ws.onclose = () => {
           reconnectTimeout = setTimeout(connectWs, 3000);
         };
-      } catch (err) {
+      } catch {
         reconnectTimeout = setTimeout(connectWs, 3000);
       }
     };
@@ -201,9 +246,9 @@ export default function WhatsAppChat({
       if (ws) ws.close();
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
     };
-  }, []);
+  }, [fetchConversations]);
 
-  // Ações de Conexão WhatsApp
+  // Conectar WhatsApp
   const handleConnect = async () => {
     setConnectingAction(true);
     try {
@@ -220,6 +265,7 @@ export default function WhatsAppChat({
     }
   };
 
+  // Desconectar WhatsApp
   const handleDisconnect = async () => {
     if (!window.confirm('Deseja realmente desconectar o WhatsApp desta sessão?')) return;
     try {
@@ -259,18 +305,17 @@ export default function WhatsAppChat({
       } else {
         const err = await res.json();
         alert(`Erro ao enviar mensagem: ${err.detail || 'Falha no envio'}`);
-        setInputText(textToSend); // Recupera texto se falhou
+        setInputText(textToSend);
       }
     } catch (err) {
       console.error('Erro enviando mensagem:', err);
-      alert('Erro de conexão ao despachar a mensagem.');
+      alert('Erro de conexão ao enviar a mensagem.');
       setInputText(textToSend);
     } finally {
       setSending(false);
     }
   };
 
-  // Atalho Enter para enviar
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -278,13 +323,13 @@ export default function WhatsAppChat({
     }
   };
 
-  // Inserir Template Rápido
+  // Modelos Rápidos
   const applyPitchTemplate = (templateType) => {
-    const leadName = activeConversation?.lead_name || 'Amigo(a)';
+    const leadName = activeConversation?.lead_name || activeLead?.business_name || 'Amigo(a)';
     let templateText = '';
 
     if (templateType === 'intro') {
-      templateText = `Olá, tudo bem? Me chamo Lucas e acompanho o mercado da sua região. Estava pesquisando sobre ${activeConversation?.lead_niche || 'empresas do seu segmento'} e encontrei o perfil da ${leadName}. Reparei em algumas oportunidades excelentes no posicionamento digital de vocês para atrair mais clientes. Podemos bater um papo rápido?`;
+      templateText = `Olá, tudo bem? Me chamo Lucas e acompanho o mercado da sua região. Estava pesquisando sobre ${activeConversation?.lead_niche || activeLead?.niche || 'empresas do seu segmento'} e encontrei o perfil da ${leadName}. Reparei em algumas oportunidades excelentes no posicionamento digital de vocês para atrair mais clientes. Podemos bater um papo rápido?`;
     } else if (templateType === 'audit') {
       templateText = `Olá! Fizemos uma análise técnica e de presença online da ${leadName} no Google. Identificamos alguns pontos de melhoria importantes na captação online que podem fazer vocês saírem na frente da concorrência. Posso te enviar esse diagnóstico gratuitamente aqui pelo WhatsApp?`;
     } else if (templateType === 'meeting') {
@@ -299,7 +344,6 @@ export default function WhatsAppChat({
   const safeLeads = Array.isArray(leads) ? leads : [];
   const safeConversations = Array.isArray(conversations) ? conversations : [];
 
-  // Encontrar lead ativo
   const activeConversation = safeConversations.find(
     (c) => c && (c.phone === activePhone || (activePhone && c.phone && c.phone.endsWith(activePhone.slice(-8))))
   );
@@ -314,7 +358,6 @@ export default function WhatsAppChat({
     return false;
   });
 
-  // Filtro de conversas
   const filteredConversations = safeConversations.filter((c) => {
     if (!c) return false;
     if (!searchTerm) return true;
@@ -326,7 +369,6 @@ export default function WhatsAppChat({
     );
   });
 
-  // Leads disponíveis para iniciar nova conversa
   const eligibleLeadsForNewChat = safeLeads.filter((l) => {
     if (!l || !l.phone) return false;
     if (!newChatSearch) return true;
@@ -338,40 +380,13 @@ export default function WhatsAppChat({
     );
   });
 
-
-  // Formatação de data/hora
-  const formatTime = (isoString) => {
-    if (!isoString) return '';
-    try {
-      const d = new Date(isoString);
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    } catch {
-      return '';
-    }
-  };
-
-  const formatDateLabel = (isoString) => {
-    if (!isoString) return '';
-    try {
-      const d = new Date(isoString);
-      const today = new Date();
-      if (d.toDateString() === today.toDateString()) return 'Hoje';
-      const yesterday = new Date(today);
-      yesterday.setDate(yesterday.getDate() - 1);
-      if (d.toDateString() === yesterday.toDateString()) return 'Ontem';
-      return d.toLocaleDateString([], { day: '2-digit', month: '2-digit' });
-    } catch {
-      return '';
-    }
-  };
-
   return (
     <div className="whatsapp-container">
-      {/* Barra de Status Superior do WhatsApp */}
+      {/* Barra de Status Superior */}
       <div className="whatsapp-status-bar">
         <div className="wa-status-left">
           <div className={`wa-status-dot ${waStatus}`} />
-          <span className="wa-status-label">
+          <div className="wa-status-label">
             {waStatus === 'connected' && (
               <>
                 <strong>WhatsApp Conectado</strong>
@@ -386,13 +401,13 @@ export default function WhatsAppChat({
             {waStatus === 'qr_ready' && <span>Aguardando leitura do QR Code...</span>}
             {waStatus === 'disconnected' && <span>WhatsApp Desconectado</span>}
             {waStatus === 'offline' && <span>Serviço WhatsApp Offline (Porta 3001)</span>}
-          </span>
+          </div>
         </div>
 
-        <div className="wa-status-actions">
+        <div>
           {waStatus === 'connected' ? (
             <button className="btn-wa-logout" onClick={handleDisconnect} title="Desconectar Sessão">
-              <LogOut size={15} /> Desconectar
+              <LogOut size={14} /> Desconectar
             </button>
           ) : (
             <button
@@ -400,43 +415,45 @@ export default function WhatsAppChat({
               onClick={handleConnect}
               disabled={connectingAction}
             >
-              <RefreshCw size={15} className={connectingAction ? 'spin' : ''} />
+              <RefreshCw size={14} className={connectingAction ? 'pulse-spinner' : ''} />
               {waStatus === 'qr_ready' ? 'Atualizar QR Code' : 'Conectar WhatsApp'}
             </button>
           )}
         </div>
       </div>
 
-      {/* TELA 1: Se o WhatsApp estiver Desconectado / Exibindo QR Code */}
+      {/* TELA 1: Desconectado / QR Code */}
       {waStatus !== 'connected' ? (
         <div className="wa-connection-card">
           <div className="wa-qr-box">
             {waStatus === 'qr_ready' && qrCodeUrl ? (
               <div className="wa-qr-inner">
                 <img src={qrCodeUrl} alt="QR Code WhatsApp" className="wa-qr-image" />
-                <div className="wa-qr-overlay-info">
-                  <Sparkles size={16} color="#10b981" /> Aproxime a câmera do seu WhatsApp
+                <div style={{ fontSize: '0.82rem', color: '#a7f3d0', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Sparkles size={14} color="#10b981" /> Aproxime a câmera do seu WhatsApp
                 </div>
               </div>
             ) : waStatus === 'connecting' ? (
-              <div className="wa-loading-qr">
-                <RefreshCw size={36} className="spin text-emerald-400" />
-                <p>Gerando chave criptográfica e QR Code...</p>
+              <div style={{ textAlign: 'center', color: '#94a3b8' }}>
+                <RefreshCw size={32} className="pulse-spinner" style={{ marginBottom: '12px' }} />
+                <p>Gerando QR Code de autenticação...</p>
               </div>
             ) : (
-              <div className="wa-loading-qr">
-                <QrCode size={56} opacity={0.3} />
-                <p>Clique abaixo para gerar o QR Code de autenticação</p>
+              <div style={{ textAlign: 'center', color: '#94a3b8' }}>
+                <QrCode size={48} opacity={0.3} style={{ marginBottom: '12px' }} />
+                <p style={{ marginBottom: '14px' }}>Clique abaixo para conectar seu WhatsApp</p>
                 <button className="btn-primary" onClick={handleConnect} disabled={connectingAction}>
-                  <RefreshCw size={16} className={connectingAction ? 'spin' : ''} /> Iniciar Conexão
+                  <RefreshCw size={14} className={connectingAction ? 'pulse-spinner' : ''} /> Iniciar Conexão
                 </button>
               </div>
             )}
           </div>
 
-          <div className="wa-instructions">
-            <h3>Conectar ao WhatsApp</h3>
-            <p className="wa-subtitle">
+          <div>
+            <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.3rem', color: '#fff', marginBottom: '8px' }}>
+              Conectar ao WhatsApp
+            </h3>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', lineHeight: 1.5, marginBottom: '18px' }}>
               Sincronize o BucaLeads com o seu WhatsApp para gerenciar conversas e abordar leads diretamente pela plataforma.
             </p>
 
@@ -459,55 +476,65 @@ export default function WhatsAppChat({
               </li>
             </ol>
 
-            <div className="wa-security-note">
-              <ShieldCheck size={18} color="#10b981" />
-              <span>Conexão direta e segura via protocolo Multi-Device oficial do WhatsApp. Suas conversas ficam salvas na sua nuvem Cloudflare D1.</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', background: 'var(--accent-emerald-subtle)', border: '1px solid var(--accent-emerald-border)', borderRadius: 'var(--radius-sm)', fontSize: '0.8rem', color: '#a7f3d0' }}>
+              <ShieldCheck size={16} color="#10b981" />
+              <span>Conexão direta e segura via protocolo Multi-Device oficial do WhatsApp.</span>
             </div>
           </div>
         </div>
       ) : (
-        /* TELA 2: Interface de Mensagens / CRM Chat (Dois Painéis) */
-        <div className="wa-messenger-layout">
-          {/* Painel Esquerdo: Lista de Conversas */}
+        /* TELA 2: 2 Painéis Messenger */
+        <div className={`wa-messenger-layout ${activePhone ? 'mobile-show-chat' : 'mobile-show-sidebar'}`}>
+          {/* Painel Esquerdo: Conversas */}
           <div className="wa-sidebar">
             <div className="wa-sidebar-header">
-              <div className="wa-search-box">
-                <Search size={16} />
+              <div className="search-input-wrapper" style={{ flex: 1 }}>
+                <Search size={14} className="search-icon-inside" />
                 <input
                   type="text"
-                  placeholder="Buscar conversa ou telefone..."
+                  className="search-filter-input"
+                  style={{ height: '32px', fontSize: '0.8rem' }}
+                  placeholder="Buscar conversa..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                 />
+                {searchTerm && (
+                  <button className="btn-clear-search" onClick={() => setSearchTerm('')}>
+                    <X size={12} />
+                  </button>
+                )}
               </div>
               <button
-                className="btn-new-chat"
+                className="btn-primary"
+                style={{ padding: '6px 10px', fontSize: '0.78rem' }}
                 onClick={() => setShowNewChatModal(true)}
                 title="Iniciar Nova Conversa com um Lead"
               >
-                + Novo Chat
+                + Novo
               </button>
             </div>
 
             <div className="wa-conversations-list">
               {filteredConversations.length === 0 ? (
-                <div className="wa-empty-conversations">
-                  <MessageCircle size={36} opacity={0.3} />
-                  <p>Nenhuma conversa ativa ainda.</p>
-                  <button className="btn-secondary btn-sm" onClick={() => setShowNewChatModal(true)}>
+                <div style={{ textAlign: 'center', padding: '36px 16px', color: 'var(--text-muted)', fontSize: '0.84rem' }}>
+                  <MessageCircle size={32} opacity={0.3} style={{ marginBottom: '8px' }} />
+                  <p>Nenhuma conversa ativa.</p>
+                  <button
+                    className="btn-secondary"
+                    style={{ marginTop: '12px', fontSize: '0.76rem', padding: '6px 12px' }}
+                    onClick={() => setShowNewChatModal(true)}
+                  >
                     Iniciar Primeiro Contato
                   </button>
                 </div>
               ) : (
                 filteredConversations.map((c) => {
-                  const isSelected =
-                    activePhone &&
-                    (c.phone === activePhone || c.phone.endsWith(activePhone.slice(-8)));
+                  const isSelected = activePhone && (c.phone === activePhone || c.phone.endsWith(activePhone.slice(-8)));
 
                   return (
                     <div
                       key={c.phone}
-                      className={`wa-conversation-item ${isSelected ? 'active' : ''} ${c.unread_count > 0 ? 'has-unread' : ''}`}
+                      className={`wa-conversation-item ${isSelected ? 'active' : ''}`}
                       onClick={() => {
                         setActivePhone(c.phone);
                         fetchMessages(c.phone);
@@ -519,38 +546,19 @@ export default function WhatsAppChat({
 
                       <div className="wa-item-info">
                         <div className="wa-item-top">
-                          <span className="wa-item-name" title={c.lead_name || c.phone}>
-                            {c.lead_name || c.phone}
-                          </span>
-                          <span className="wa-item-time">
-                            {formatDateLabel(c.last_message_at)}
-                          </span>
+                          <span className="wa-item-name">{c.lead_name || c.phone}</span>
+                          <span className="wa-item-time">{formatDateLabel(c.last_message_at)}</span>
                         </div>
 
                         <div className="wa-item-bottom">
-                          <p className="wa-item-last-msg" title={c.last_message || 'Sem mensagens'}>
-                            {c.last_message_direction === 'outgoing' && (
-                              <span className="outgoing-tick">✓✓ </span>
-                            )}
+                          <p className="wa-item-last-msg">
+                            {c.last_message_direction === 'outgoing' && '✓✓ '}
                             {c.last_message || 'Nenhuma mensagem recente'}
                           </p>
                           {c.unread_count > 0 && (
-                            <span className="wa-unread-badge">{c.unread_count}</span>
+                            <span className="unread-badge-pulse">{c.unread_count}</span>
                           )}
                         </div>
-
-                        {c.lead_crm_status && (
-                          <div className="wa-item-crm-tag">
-                            <span className={`crm-pill crm-pill-${c.lead_crm_status}`}>
-                              {c.lead_crm_status === 'new' && 'Novo Lead'}
-                              {c.lead_crm_status === 'contacted' && 'Contatado'}
-                              {c.lead_crm_status === 'in_conversation' && 'Em Conversa'}
-                              {c.lead_crm_status === 'proposal_sent' && 'Proposta'}
-                              {c.lead_crm_status === 'won' && 'Fechado'}
-                              {c.lead_crm_status === 'lost' && 'Perdido'}
-                            </span>
-                          </div>
-                        )}
                       </div>
                     </div>
                   );
@@ -559,36 +567,45 @@ export default function WhatsAppChat({
             </div>
           </div>
 
-          {/* Painel Direito: Janela de Chat Ativa */}
+          {/* Painel Direito: Janela de Chat */}
           <div className="wa-chat-window">
             {activePhone ? (
               <>
-                {/* Cabeçalho do Chat */}
+                {/* Header do Chat */}
                 <div className="wa-chat-header">
-                  <div className="wa-header-contact">
-                    <div className="wa-chat-avatar">
-                      {String(activeConversation?.lead_name || activePhone || 'WA').slice(0, 2).toUpperCase()}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    {/* Botão Voltar para Mobile */}
+                    <button
+                      className="btn-icon-subtle"
+                      style={{ padding: '6px' }}
+                      onClick={() => setActivePhone(null)}
+                      title="Voltar para a lista de conversas"
+                    >
+                      <ArrowLeft size={16} />
+                    </button>
+
+                    <div className="wa-item-avatar" style={{ width: '34px', height: '34px' }}>
+                      {String(activeConversation?.lead_name || activeLead?.business_name || activePhone).slice(0, 2).toUpperCase()}
                     </div>
+
                     <div>
-                      <h4 className="wa-chat-title">
+                      <div style={{ fontWeight: 700, fontSize: '0.9rem', color: '#fff' }}>
                         {activeConversation?.lead_name || activeLead?.business_name || activePhone}
-                      </h4>
-                      <div className="wa-chat-subtitle">
-                        <Phone size={12} /> {activePhone}
+                      </div>
+                      <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <Phone size={10} /> {activePhone}
                         {activeLead?.city && <span> • {activeLead.city}</span>}
-                        {activeLead?.niche && <span> • {activeLead.niche}</span>}
                       </div>
                     </div>
                   </div>
 
-                  <div className="wa-header-actions">
-                    {/* Seletor Rápido de Status CRM */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     {activeLead && onUpdateLeadStatus && (
                       <select
-                        className="lead-stage-selector"
+                        className="form-select"
+                        style={{ height: '30px', padding: '0 8px', fontSize: '0.76rem' }}
                         value={activeLead.crm_status || 'new'}
                         onChange={(e) => onUpdateLeadStatus(activeLead.id, e.target.value)}
-                        style={{ height: '32px', fontSize: '0.8rem' }}
                       >
                         <option value="new">🆕 Novo Lead</option>
                         <option value="contacted">📞 Contatado</option>
@@ -601,11 +618,12 @@ export default function WhatsAppChat({
 
                     {activeLead && onOpenLeadDetail && (
                       <button
-                        className="btn-secondary btn-sm"
+                        className="btn-icon-subtle"
+                        style={{ padding: '6px' }}
                         onClick={() => onOpenLeadDetail(activeLead)}
-                        title="Ver ficha completa do Lead"
+                        title="Ver ficha completa do lead"
                       >
-                        <Info size={14} /> Ficha do Lead
+                        <Info size={16} />
                       </button>
                     )}
                   </div>
@@ -614,36 +632,27 @@ export default function WhatsAppChat({
                 {/* Área de Mensagens */}
                 <div className="wa-messages-area">
                   {messagesLoading ? (
-                    <div className="wa-messages-loading">
-                      <RefreshCw size={24} className="spin" />
-                      <span>Carregando histórico...</span>
+                    <div style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)', fontSize: '0.84rem' }}>
+                      <RefreshCw size={20} className="pulse-spinner" style={{ marginBottom: '8px' }} />
+                      <p>Carregando histórico...</p>
                     </div>
                   ) : messages.length === 0 ? (
-                    <div className="wa-messages-empty">
-                      <MessageCircle size={44} opacity={0.3} />
-                      <h4>Inicie o contato com este Lead</h4>
-                      <p>Escolha um dos modelos rápidos abaixo para enviar a primeira abordagem pelo WhatsApp.</p>
+                    <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>
+                      <MessageCircle size={36} opacity={0.3} style={{ marginBottom: '10px' }} />
+                      <h4 style={{ color: '#fff', fontSize: '1rem', marginBottom: '4px' }}>Inicie o contato com este Lead</h4>
+                      <p style={{ fontSize: '0.82rem' }}>Escolha um modelo rápido abaixo para enviar a primeira mensagem.</p>
                     </div>
                   ) : (
                     messages.map((m, idx) => {
                       const isOutgoing = m.direction === 'outgoing';
                       return (
-                        <div
-                          key={m.id || idx}
-                          className={`wa-message-row ${isOutgoing ? 'outgoing' : 'incoming'}`}
-                        >
+                        <div key={m.id || idx} className={`wa-message-row ${isOutgoing ? 'outgoing' : 'incoming'}`}>
                           <div className={`wa-message-bubble ${isOutgoing ? 'bubble-outgoing' : 'bubble-incoming'}`}>
-                            <div className="wa-message-content">{m.content}</div>
+                            <div>{m.content}</div>
                             <div className="wa-message-meta">
-                              <span className="wa-message-time">{formatTime(m.created_at)}</span>
+                              <span>{formatTime(m.created_at)}</span>
                               {isOutgoing && (
-                                <span className="wa-message-status">
-                                  {m.status === 'read' ? (
-                                    <CheckCheck size={14} color="#38bdf8" />
-                                  ) : (
-                                    <CheckCheck size={14} opacity={0.6} />
-                                  )}
-                                </span>
+                                <CheckCheck size={12} color={m.status === 'read' ? '#38bdf8' : 'currentColor'} opacity={m.status === 'read' ? 1 : 0.6} />
                               )}
                             </div>
                           </div>
@@ -654,106 +663,101 @@ export default function WhatsAppChat({
                   <div ref={messagesEndRef} />
                 </div>
 
-                {/* Templates Rápidos de Abordagem */}
+                {/* Modelos Rápidos */}
                 <div className="wa-quick-pitches">
-                  <span className="quick-pitch-label">
-                    <Zap size={13} color="#f59e0b" /> Modelos Rápidos:
+                  <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>
+                    <Zap size={12} color="#f59e0b" /> Modelos:
                   </span>
-                  <button
-                    className="quick-pitch-pill"
-                    onClick={() => applyPitchTemplate('intro')}
-                    title="Apresentação inicial para o lead"
-                  >
+                  <button className="quick-pitch-pill" onClick={() => applyPitchTemplate('intro')}>
                     👋 Apresentação
                   </button>
-                  <button
-                    className="quick-pitch-pill"
-                    onClick={() => applyPitchTemplate('audit')}
-                    title="Oferecer diagnóstico do site"
-                  >
+                  <button className="quick-pitch-pill" onClick={() => applyPitchTemplate('audit')}>
                     🌐 Diagnóstico Grátis
                   </button>
-                  <button
-                    className="quick-pitch-pill"
-                    onClick={() => applyPitchTemplate('meeting')}
-                    title="Propor reunião de 10 minutos"
-                  >
+                  <button className="quick-pitch-pill" onClick={() => applyPitchTemplate('meeting')}>
                     📅 Agendar Reunião
                   </button>
-                  <button
-                    className="quick-pitch-pill"
-                    onClick={() => applyPitchTemplate('proposal')}
-                    title="Enviar proposta comercial"
-                  >
+                  <button className="quick-pitch-pill" onClick={() => applyPitchTemplate('proposal')}>
                     💼 Proposta Comercial
                   </button>
                 </div>
 
-                {/* Barra de Entrada de Texto */}
+                {/* Input Bar */}
                 <form className="wa-chat-input-bar" onSubmit={handleSendMessage}>
                   <textarea
                     rows={1}
                     className="wa-chat-input"
-                    placeholder="Digite sua mensagem... (Enter para enviar, Shift+Enter para nova linha)"
+                    placeholder="Digite sua mensagem... (Enter envia, Shift+Enter pula linha)"
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
                     onKeyDown={handleKeyDown}
                   />
-
                   <button
                     type="submit"
                     className="btn-wa-send"
                     disabled={!inputText.trim() || sending}
                     title="Enviar Mensagem"
                   >
-                    <Send size={18} />
+                    <Send size={16} />
                   </button>
                 </form>
               </>
             ) : (
-              <div className="wa-chat-placeholder">
-                <MessageCircle size={64} opacity={0.2} />
-                <h3>Central de Conversas WhatsApp</h3>
-                <p>Selecione um contato na barra lateral ou clique no botão "+ Novo Chat" para iniciar uma abordagem comercial.</p>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)', padding: '40px', textAlign: 'center' }}>
+                <MessageCircle size={48} opacity={0.2} style={{ marginBottom: '12px' }} />
+                <h3 style={{ color: '#fff', fontSize: '1.15rem', marginBottom: '6px' }}>Central de Mensagens WhatsApp</h3>
+                <p style={{ fontSize: '0.84rem', maxWidth: '360px' }}>
+                  Selecione uma conversa na barra lateral ou clique em "+ Novo" para abordar uma empresa minerada.
+                </p>
               </div>
             )}
           </div>
         </div>
       )}
 
-      {/* Modal de Nova Conversa com Lead do CRM */}
+      {/* Modal: Novo Chat */}
       {showNewChatModal && (
-        <div className="modal-backdrop" onClick={() => setShowNewChatModal(false)}>
-          <div className="modal-card new-chat-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-overlay" onClick={() => setShowNewChatModal(false)}>
+          <div className="modal-content" style={{ maxWidth: '480px' }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h3>Iniciar Conversa com Lead do CRM</h3>
-              <button className="modal-close" onClick={() => setShowNewChatModal(false)}>
-                &times;
+              <h3>Iniciar Conversa com Lead</h3>
+              <button className="btn-icon-subtle" onClick={() => setShowNewChatModal(false)}>
+                <X size={16} />
               </button>
             </div>
 
-            <div className="modal-body">
-              <div className="search-input-wrapper" style={{ marginBottom: '14px' }}>
-                <Search size={16} />
+            <div className="modal-body" style={{ padding: '16px' }}>
+              <div className="search-input-wrapper" style={{ width: '100%', maxWidth: 'none', marginBottom: '12px' }}>
+                <Search size={14} className="search-icon-inside" />
                 <input
                   type="text"
-                  placeholder="Pesquisar por nome da empresa, cidade ou telefone..."
+                  className="search-filter-input"
+                  placeholder="Pesquisar por empresa, telefone ou cidade..."
                   value={newChatSearch}
                   onChange={(e) => setNewChatSearch(e.target.value)}
                   autoFocus
                 />
               </div>
 
-              <div className="new-chat-leads-list">
+              <div style={{ maxHeight: '340px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 {eligibleLeadsForNewChat.length === 0 ? (
-                  <p style={{ textAlign: 'center', opacity: 0.6, padding: '20px' }}>
-                    Nenhum lead com telefone encontrado para este filtro.
+                  <p style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '24px', fontSize: '0.84rem' }}>
+                    Nenhum lead com telefone encontrado.
                   </p>
                 ) : (
                   eligibleLeadsForNewChat.map((l) => (
                     <div
                       key={l.id}
-                      className="new-chat-lead-item"
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        padding: '10px 12px',
+                        background: 'var(--bg-app)',
+                        borderRadius: 'var(--radius-sm)',
+                        border: '1px solid var(--border-subtle)',
+                        cursor: 'pointer'
+                      }}
                       onClick={() => {
                         const cleanPhone = l.phone.replace(/\D/g, '');
                         setActivePhone(cleanPhone);
@@ -761,13 +765,13 @@ export default function WhatsAppChat({
                         setShowNewChatModal(false);
                       }}
                     >
-                      <div className="lead-item-details">
-                        <strong>{l.business_name}</strong>
-                        <span>
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: '0.88rem', color: '#fff' }}>{l.business_name}</div>
+                        <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
                           {l.phone} {l.city ? `• ${l.city}` : ''} • {l.niche}
-                        </span>
+                        </div>
                       </div>
-                      <ChevronRight size={18} opacity={0.6} />
+                      <ChevronRight size={16} color="var(--text-muted)" />
                     </div>
                   ))
                 )}
