@@ -11,8 +11,11 @@ from app.models import Search, Lead, SiteAudit, ChatMessage
 from app.routers import search, leads, export, whatsapp
 
 # Criar tabelas automaticamente se não existirem e rodar migrações
-Base.metadata.create_all(bind=engine)
-run_migrations()
+try:
+    Base.metadata.create_all(bind=engine)
+    run_migrations()
+except Exception as e:
+    print(f"[Database Init Warning] Não foi possível rodar create_all/migrações automaticamente: {e}")
 
 app = FastAPI(
     title="BucaLeads API",

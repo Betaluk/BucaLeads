@@ -91,6 +91,10 @@ class LeadUpdateNotes(BaseModel):
 class BatchDeleteRequest(BaseModel):
     lead_ids: List[str]
 
+class BatchStatusRequest(BaseModel):
+    lead_ids: List[str]
+    crm_status: str
+
 
 # Pitch Schemas
 class PitchResponse(BaseModel):

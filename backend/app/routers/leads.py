@@ -3,9 +3,11 @@ from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
 from app.database import get_db
 from app.models import Lead, SiteAudit
-from app.schemas import LeadResponse, LeadUpdateStatus, LeadUpdateNotes, PitchResponse, BatchDeleteRequest
+from app.schemas import LeadResponse, LeadUpdateStatus, LeadUpdateNotes, PitchResponse, BatchDeleteRequest, BatchStatusRequest
 from app.services.pitch import PitchGenerator
 from app.services.dedup import cleanup_duplicate_leads
+from app.collector.inspector import inspect_website
+from app.services.scoring import calculate_lead_score
 
 router = APIRouter(prefix="/api/leads", tags=["Leads & CRM"])
 
@@ -103,6 +105,25 @@ def batch_delete_leads(body: BatchDeleteRequest, db: Session = Depends(get_db)):
 
     return {"message": f"{count} leads excluídos com sucesso", "deleted_count": count}
 
+@router.post("/batch-status")
+def batch_update_status(body: BatchStatusRequest, db: Session = Depends(get_db)):
+    """Atualiza o status CRM de múltiplos leads em uma única transação atômica."""
+    if not body.lead_ids:
+        return {"updated_count": 0}
+
+    valid_statuses = {"new", "contacted", "in_conversation", "proposal_sent", "won", "lost"}
+    if body.crm_status not in valid_statuses:
+        raise HTTPException(status_code=400, detail="Status CRM inválido")
+
+    leads = db.query(Lead).filter(Lead.id.in_(body.lead_ids)).all()
+    count = 0
+    for lead in leads:
+        lead.crm_status = body.crm_status
+        count += 1
+    db.commit()
+
+    return {"message": f"{count} leads atualizados para {body.crm_status}", "updated_count": count}
+
 @router.get("/{lead_id}", response_model=LeadResponse)
 def get_lead(lead_id: str, db: Session = Depends(get_db)):
     lead = db.query(Lead).filter(Lead.id == lead_id).first()
@@ -132,6 +153,47 @@ def update_lead_notes(lead_id: str, body: LeadUpdateNotes, db: Session = Depends
         raise HTTPException(status_code=404, detail="Lead não encontrado")
 
     lead.notes = body.notes
+    db.commit()
+    db.refresh(lead)
+    return lead
+
+@router.post("/{lead_id}/re-audit", response_model=LeadResponse)
+async def reaudit_lead(lead_id: str, db: Session = Depends(get_db)):
+    """Reexecuta a auditoria técnica do website de um lead e recalcula o Lead Score com precisão."""
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead não encontrado")
+
+    if not lead.website or not lead.website.strip():
+        lead.website_status = "none"
+    else:
+        audit_res = await inspect_website(lead.website)
+        lead.website_status = audit_res.get("website_status", "healthy")
+
+        site_audit = SiteAudit(
+            lead_id=lead.id,
+            url_tested=audit_res.get("url_tested") or lead.website,
+            is_accessible=audit_res.get("is_accessible", False),
+            is_https=audit_res.get("is_https", False),
+            is_mobile_responsive=audit_res.get("is_mobile_responsive", False),
+            response_time_ms=audit_res.get("response_time_ms", 0),
+            redirects_to_social=audit_res.get("redirects_to_social", False),
+            social_network=audit_res.get("social_network")
+        )
+        db.add(site_audit)
+
+    score, tier, breakdown = calculate_lead_score(
+        website=lead.website or "",
+        website_status=lead.website_status,
+        review_count=lead.review_count,
+        rating=lead.rating,
+        phone=lead.phone or "",
+        has_recent_activity=lead.has_recent_activity
+    )
+    lead.lead_score = score
+    lead.score_tier = tier
+    lead.score_breakdown = breakdown
+
     db.commit()
     db.refresh(lead)
     return lead

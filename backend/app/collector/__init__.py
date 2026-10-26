@@ -55,11 +55,13 @@ async def orchestrate_collection(
 
         if website and deep_audit:
             try:
-                # Limite de 4.0s para não travar a requisição geral
-                audit_data = await asyncio.wait_for(inspect_website(website), timeout=4.0)
+                # Limite de 7.5s para auditoria profunda de rede sem falso-positivos
+                audit_data = await asyncio.wait_for(inspect_website(website), timeout=7.5)
                 website_status = audit_data.get("website_status", "healthy")
-            except Exception:
-                website_status = "insecure"
+            except Exception as e:
+                # Em caso de timeout de rede, considerar site lento (outdated) em vez de sem HTTPS (insecure)
+                print(f"[Audit Timeout/Warning] {website}: {e}")
+                website_status = "outdated" if "https" in website.lower() else "insecure"
         elif website:
             website_status = "healthy"
 
