@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
 from app.database import get_db
 from app.models import Lead, SiteAudit
-from app.schemas import LeadResponse, LeadUpdateStatus, LeadUpdateNotes, PitchResponse, BatchDeleteRequest, BatchStatusRequest
+from app.schemas import LeadResponse, LeadUpdateStatus, LeadUpdateNotes, PitchResponse, BatchDeleteRequest, BatchStatusRequest, PitchAIRequest
 from app.services.pitch import PitchGenerator
 from app.services.dedup import cleanup_duplicate_leads
 from app.collector.inspector import inspect_website
@@ -214,7 +214,7 @@ def delete_lead(lead_id: str, db: Session = Depends(get_db)):
     return {"message": f"Lead '{name}' excluído com sucesso", "id": lead_id}
 
 @router.get("/{lead_id}/pitch", response_model=PitchResponse)
-def generate_lead_pitch(lead_id: str, db: Session = Depends(get_db)):
+def generate_lead_pitch(lead_id: str, style: str = Query("direct"), db: Session = Depends(get_db)):
     lead = db.query(Lead).filter(Lead.id == lead_id).first()
     if not lead:
         raise HTTPException(status_code=404, detail="Lead não encontrado")
@@ -230,13 +230,56 @@ def generate_lead_pitch(lead_id: str, db: Session = Depends(get_db)):
         "phone": lead.phone
     }
 
-    pitch_data = PitchGenerator.generate_pitch(lead_dict)
+    pitch_data = PitchGenerator.generate_pitch(lead_dict, style=style)
 
     return PitchResponse(
         lead_id=lead.id,
         business_name=lead.business_name,
+        clean_business_name=pitch_data.get("clean_business_name"),
         phone=pitch_data.get("phone"),
         whatsapp_url=pitch_data.get("whatsapp_url"),
         pitch_text=pitch_data.get("pitch_text", ""),
-        scenario=pitch_data.get("scenario", "default")
+        scenario=pitch_data.get("scenario", "default"),
+        style=pitch_data.get("style", "direct"),
+        styles_available=pitch_data.get("styles_available"),
+        is_ai_generated=pitch_data.get("is_ai_generated", False),
+        ai_error=pitch_data.get("ai_error")
+    )
+
+@router.post("/{lead_id}/pitch/ai", response_model=PitchResponse)
+async def generate_lead_pitch_ai(lead_id: str, req: PitchAIRequest, db: Session = Depends(get_db)):
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead não encontrado")
+
+    lead_dict = {
+        "business_name": lead.business_name,
+        "niche": lead.niche,
+        "city": lead.city or "sua região",
+        "rating": lead.rating,
+        "review_count": lead.review_count,
+        "website": lead.website,
+        "website_status": lead.website_status,
+        "phone": lead.phone
+    }
+
+    pitch_data = await PitchGenerator.generate_ai_pitch(
+        lead_dict,
+        style=req.style,
+        custom_instructions=req.custom_instructions,
+        api_key=req.api_key
+    )
+
+    return PitchResponse(
+        lead_id=lead.id,
+        business_name=lead.business_name,
+        clean_business_name=pitch_data.get("clean_business_name"),
+        phone=pitch_data.get("phone"),
+        whatsapp_url=pitch_data.get("whatsapp_url"),
+        pitch_text=pitch_data.get("pitch_text", ""),
+        scenario=pitch_data.get("scenario", "default"),
+        style=pitch_data.get("style", "direct"),
+        styles_available=pitch_data.get("styles_available"),
+        is_ai_generated=pitch_data.get("is_ai_generated", False),
+        ai_error=pitch_data.get("ai_error")
     )

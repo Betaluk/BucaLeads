@@ -65,6 +65,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('kanban'); // 'kanban', 'table', 'history', 'search', 'whatsapp'
   const [unreadTotal, setUnreadTotal] = useState(0);
   const [initialWaPhone, setInitialWaPhone] = useState(null);
+  const [initialWaText, setInitialWaText] = useState('');
   const [leads, setLeads] = useState([]);
 
   const [stats, setStats] = useState(null);
@@ -1026,6 +1027,8 @@ export default function App() {
             onUpdateLeadStatus={updateLeadStatus}
             initialContactPhone={initialWaPhone}
             onClearInitialContact={() => setInitialWaPhone(null)}
+            initialMessageText={initialWaText}
+            onClearInitialMessage={() => setInitialWaText('')}
             onUnreadCountChange={(count) => setUnreadTotal(count)}
           />
         </ErrorBoundary>
@@ -1124,8 +1127,9 @@ export default function App() {
         copiedPitch={copiedPitch}
         onCopyPitch={copyToClipboard}
         onClose={() => setPitchData(null)}
-        onOpenWhatsApp={(phone) => {
+        onOpenWhatsApp={(phone, text) => {
           setInitialWaPhone(phone);
+          setInitialWaText(text || '');
           setPitchData(null);
           setActiveTab('whatsapp');
         }}

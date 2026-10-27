@@ -100,10 +100,20 @@ class BatchStatusRequest(BaseModel):
 class PitchResponse(BaseModel):
     lead_id: str
     business_name: str
+    clean_business_name: Optional[str] = None
     phone: Optional[str] = None
     whatsapp_url: Optional[str] = None
     pitch_text: str
     scenario: str
+    style: str = "direct"
+    styles_available: Optional[Dict[str, str]] = None
+    is_ai_generated: bool = False
+    ai_error: Optional[str] = None
+
+class PitchAIRequest(BaseModel):
+    style: str = "direct"
+    custom_instructions: Optional[str] = None
+    api_key: Optional[str] = None
 
 # WhatsApp Chat Schemas
 class ChatMessageResponse(BaseModel):

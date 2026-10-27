@@ -50,6 +50,8 @@ export default function WhatsAppChat({
   onUpdateLeadStatus,
   initialContactPhone = null,
   onClearInitialContact,
+  initialMessageText = '',
+  onClearInitialMessage,
   onUnreadCountChange
 }) {
   // Estado da Conexão WhatsApp
@@ -184,6 +186,14 @@ export default function WhatsAppChat({
       selectContact();
     }
   }, [initialContactPhone, fetchMessages, onClearInitialContact]);
+
+  // Preencher mensagem inicial se informada pelo Pitch de Vendas
+  useEffect(() => {
+    if (initialMessageText) {
+      setInputText(initialMessageText);
+      if (onClearInitialMessage) onClearInitialMessage();
+    }
+  }, [initialMessageText, onClearInitialMessage]);
 
   // Tecla Escape fecha modal
   useEffect(() => {
