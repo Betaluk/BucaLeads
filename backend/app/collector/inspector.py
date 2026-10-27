@@ -1,4 +1,5 @@
 import time
+import asyncio
 import re
 import ssl
 from urllib.parse import urlparse
@@ -40,6 +41,26 @@ def detect_social_redirect(url: str) -> tuple[bool, str | None]:
             return True, network
     return False, None
 
+def is_real_ssl_error(exc: Exception) -> bool:
+    """Verifica com precisão se a exceção foi causada por certificado SSL inválido/rejeitado."""
+    curr = exc
+    while curr is not None:
+        if isinstance(curr, ssl.SSLError):
+            return True
+        err_str = str(curr).lower()
+        if any(term in err_str for term in [
+            "certificate_verify_failed",
+            "certificateverifyfailed",
+            "ssl: certificate",
+            "self-signed certificate",
+            "certificate has expired",
+            "hostname mismatch",
+            "tlsv1 alert"
+        ]):
+            return True
+        curr = getattr(curr, "__cause__", None)
+    return False
+
 async def inspect_website(url: str) -> Dict[str, Any]:
     """
     Audita levemente a URL da empresa usando HTTP assíncrono.
@@ -73,11 +94,16 @@ async def inspect_website(url: str) -> Dict[str, Any]:
             "website_status": "social_media"
         }
 
-    # Se não tiver protocolo, tentar HTTPS por padrão
-    if not raw_clean.startswith("http://") and not raw_clean.startswith("https://"):
-        primary_url = "https://" + raw_clean
+    # Sempre priorizar teste via HTTPS para evitar múltiplos saltos e lentidão desnecessária
+    if raw_clean.startswith("http://"):
+        preferred_url = raw_clean.replace("http://", "https://", 1)
+        fallback_http_url = raw_clean
+    elif raw_clean.startswith("https://"):
+        preferred_url = raw_clean
+        fallback_http_url = raw_clean.replace("https://", "http://", 1)
     else:
-        primary_url = raw_clean
+        preferred_url = "https://" + raw_clean
+        fallback_http_url = "http://" + raw_clean
 
     headers = {
         "User-Agent": (
@@ -92,7 +118,7 @@ async def inspect_website(url: str) -> Dict[str, Any]:
     ssl_context = get_system_ssl_context()
     start_time = time.time()
 
-    # Tentativa 1: Acessar com validação SSL padrão do sistema operacional
+    # Tentativa 1: Acessar via HTTPS com validação SSL padrão do sistema
     try:
         async with httpx.AsyncClient(
             headers=headers,
@@ -100,7 +126,7 @@ async def inspect_website(url: str) -> Dict[str, Any]:
             follow_redirects=True,
             verify=ssl_context
         ) as client:
-            resp = await client.get(primary_url)
+            resp = await client.get(preferred_url)
             elapsed_ms = int((time.time() - start_time) * 1000)
 
             # Checar se redirecionou para rede social
@@ -108,7 +134,7 @@ async def inspect_website(url: str) -> Dict[str, Any]:
             is_social_final, network_final = detect_social_redirect(final_url)
             if is_social_final:
                 return {
-                    "url_tested": primary_url,
+                    "url_tested": preferred_url,
                     "is_accessible": True,
                     "is_https": final_url.startswith("https"),
                     "is_mobile_responsive": True,
@@ -130,23 +156,14 @@ async def inspect_website(url: str) -> Dict[str, Any]:
             if not is_accessible:
                 website_status = "insecure"
             elif not is_https:
-                # Se o site estava em http://, testar se responde em https://
-                if primary_url.startswith("http://"):
-                    try:
-                        https_alt = primary_url.replace("http://", "https://", 1)
-                        alt_resp = await client.get(https_alt)
-                        if alt_resp.status_code < 400 and str(alt_resp.url).startswith("https://"):
-                            is_https = True
-                    except Exception:
-                        pass
-                website_status = "healthy" if is_https and is_mobile and elapsed_ms <= 4500 else ("outdated" if is_https else "insecure")
+                website_status = "insecure"
             elif elapsed_ms > 4500 or not is_mobile:
                 website_status = "outdated"
             else:
                 website_status = "healthy"
 
             return {
-                "url_tested": primary_url,
+                "url_tested": preferred_url,
                 "is_accessible": is_accessible,
                 "is_https": is_https,
                 "is_mobile_responsive": is_mobile,
@@ -156,70 +173,109 @@ async def inspect_website(url: str) -> Dict[str, Any]:
                 "website_status": website_status
             }
 
-    except Exception:
-        # Se falhou com contexto de SSL do sistema, testar:
-        # A) Se o site é acessível com verify=False (indicando certificado inválido/expirado/autoassinado)
-        # B) Se o site é acessível via HTTP simples (inseguro)
+    except Exception as e:
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        has_ssl_err = is_real_ssl_error(e)
+        is_timeout = isinstance(e, (httpx.TimeoutException, asyncio.TimeoutError))
+
+        # Se falhou por erro real de certificado SSL (expirado, autoassinado, mismatch):
+        # Testar se responde com verify=False para confirmar se o site está online com SSL inválido
+        if has_ssl_err:
+            try:
+                async with httpx.AsyncClient(
+                    headers=headers,
+                    timeout=4.5,
+                    follow_redirects=True,
+                    verify=False
+                ) as client_unverified:
+                    resp = await client_unverified.get(preferred_url)
+                    elapsed_total = int((time.time() - start_time) * 1000)
+                    final_url = str(resp.url)
+                    is_social_final, network_final = detect_social_redirect(final_url)
+                    if is_social_final:
+                        return {
+                            "url_tested": preferred_url,
+                            "is_accessible": True,
+                            "is_https": False,
+                            "is_mobile_responsive": True,
+                            "response_time_ms": elapsed_total,
+                            "redirects_to_social": True,
+                            "social_network": network_final,
+                            "website_status": "social_media"
+                        }
+
+                    is_accessible = (resp.status_code < 400)
+                    return {
+                        "url_tested": preferred_url,
+                        "is_accessible": is_accessible,
+                        "is_https": False,  # Certificado inválido/rejeitado
+                        "is_mobile_responsive": False,
+                        "response_time_ms": elapsed_total,
+                        "redirects_to_social": False,
+                        "social_network": None,
+                        "website_status": "insecure"
+                    }
+            except Exception:
+                pass
+
+        # Se HTTPS falhou (ex: porta 443 fechada, ou timeout) e temos fallback HTTP:
         try:
             async with httpx.AsyncClient(
                 headers=headers,
-                timeout=5.0,
+                timeout=4.0,
                 follow_redirects=True,
-                verify=False
-            ) as client_unverified:
-                resp = await client_unverified.get(primary_url)
-                elapsed_ms = int((time.time() - start_time) * 1000)
-
+                verify=ssl_context
+            ) as client_http:
+                resp = await client_http.get(fallback_http_url)
                 final_url = str(resp.url)
-                is_social_final, network_final = detect_social_redirect(final_url)
-                if is_social_final:
-                    return {
-                        "url_tested": primary_url,
-                        "is_accessible": True,
-                        "is_https": final_url.startswith("https"),
-                        "is_mobile_responsive": True,
-                        "response_time_ms": elapsed_ms,
-                        "redirects_to_social": True,
-                        "social_network": network_final,
-                        "website_status": "social_media"
-                    }
+                is_https_final = final_url.startswith("https://")
+                elapsed_total = int((time.time() - start_time) * 1000)
 
-                is_accessible = (resp.status_code < 400)
-                # Respondeu em HTTPS sem verificação (ou seja, certificado inválido/inseguro) ou HTTP
-                return {
-                    "url_tested": primary_url,
-                    "is_accessible": is_accessible,
-                    "is_https": False, # Não possui HTTPS válido
-                    "is_mobile_responsive": False,
-                    "response_time_ms": elapsed_ms,
-                    "redirects_to_social": False,
-                    "social_network": None,
-                    "website_status": "insecure"
-                }
+                if is_https_final:
+                    html_text = resp.text[:150000]
+                    soup = BeautifulSoup(html_text, "html.parser")
+                    viewport = soup.find("meta", attrs={"name": re.compile(r"viewport", re.I)})
+                    is_mobile = bool(viewport and "width=device-width" in (viewport.get("content") or ""))
+                    return {
+                        "url_tested": fallback_http_url,
+                        "is_accessible": (resp.status_code < 400),
+                        "is_https": True,
+                        "is_mobile_responsive": is_mobile,
+                        "response_time_ms": elapsed_total,
+                        "redirects_to_social": False,
+                        "social_network": None,
+                        "website_status": "outdated" if (elapsed_total > 4500 or not is_mobile) else "healthy"
+                    }
+                else:
+                    return {
+                        "url_tested": fallback_http_url,
+                        "is_accessible": (resp.status_code < 400),
+                        "is_https": False,
+                        "is_mobile_responsive": False,
+                        "response_time_ms": elapsed_total,
+                        "redirects_to_social": False,
+                        "social_network": None,
+                        "website_status": "insecure"
+                    }
         except Exception:
-            # Tentar HTTP puro como último recurso se a URL inicial era HTTPS
-            if primary_url.startswith("https://"):
-                try:
-                    http_fallback = primary_url.replace("https://", "http://", 1)
-                    async with httpx.AsyncClient(headers=headers, timeout=4.0, follow_redirects=True, verify=False) as client_http:
-                        resp = await client_http.get(http_fallback)
-                        elapsed_ms = int((time.time() - start_time) * 1000)
-                        return {
-                            "url_tested": http_fallback,
-                            "is_accessible": (resp.status_code < 400),
-                            "is_https": False,
-                            "is_mobile_responsive": False,
-                            "response_time_ms": elapsed_ms,
-                            "redirects_to_social": False,
-                            "social_network": None,
-                            "website_status": "insecure"
-                        }
-                except Exception:
-                    pass
+            pass
+
+        # Se foi apenas timeout de rede, classificar como lento/instável (outdated), nunca inseguro falso-positivo
+        if is_timeout:
+            return {
+                "url_tested": preferred_url,
+                "is_accessible": False,
+                "is_https": preferred_url.startswith("https://"),
+                "is_mobile_responsive": False,
+                "response_time_ms": elapsed_ms,
+                "redirects_to_social": False,
+                "social_network": None,
+                "website_status": "outdated"
+            }
 
         # Completamente inacessível (fora do ar, DNS inválido, conexão recusada)
         return {
-            "url_tested": primary_url,
+            "url_tested": preferred_url,
             "is_accessible": False,
             "is_https": False,
             "is_mobile_responsive": False,

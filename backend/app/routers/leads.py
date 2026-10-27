@@ -169,6 +169,10 @@ async def reaudit_lead(lead_id: str, db: Session = Depends(get_db)):
     else:
         audit_res = await inspect_website(lead.website)
         lead.website_status = audit_res.get("website_status", "healthy")
+        if audit_res.get("is_https") and audit_res.get("url_tested"):
+            tested_u = audit_res["url_tested"]
+            if tested_u.startswith("https://") and not lead.website.startswith("https://"):
+                lead.website = tested_u
 
         site_audit = SiteAudit(
             lead_id=lead.id,

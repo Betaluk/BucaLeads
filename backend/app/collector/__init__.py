@@ -55,13 +55,17 @@ async def orchestrate_collection(
 
         if website and deep_audit:
             try:
-                # Limite de 7.5s para auditoria profunda de rede sem falso-positivos
-                audit_data = await asyncio.wait_for(inspect_website(website), timeout=7.5)
+                # Limite de 8.5s para auditoria profunda de rede sem falso-positivos
+                audit_data = await asyncio.wait_for(inspect_website(website), timeout=8.5)
                 website_status = audit_data.get("website_status", "healthy")
+                if audit_data.get("is_https") and audit_data.get("url_tested"):
+                    tested_u = audit_data["url_tested"]
+                    if tested_u.startswith("https://") and not website.startswith("https://"):
+                        website = tested_u
             except Exception as e:
                 # Em caso de timeout de rede, considerar site lento (outdated) em vez de sem HTTPS (insecure)
                 print(f"[Audit Timeout/Warning] {website}: {e}")
-                website_status = "outdated" if "https" in website.lower() else "insecure"
+                website_status = "outdated"
         elif website:
             website_status = "healthy"
 
@@ -100,9 +104,14 @@ async def orchestrate_collection(
             "audit_data": audit_data
         }
 
-    # Executar enriquecimento concorrente
+    # Executar enriquecimento concorrente com semáforo para estabilidade de rede
+    sem = asyncio.Semaphore(4)
+    async def sem_enrich_lead(r: Dict[str, Any]) -> Dict[str, Any]:
+        async with sem:
+            return await enrich_lead(r)
+
     if raw_leads:
-        enriched_leads = await asyncio.gather(*(enrich_lead(r) for r in raw_leads))
+        enriched_leads = await asyncio.gather(*(sem_enrich_lead(r) for r in raw_leads))
         enriched_leads = list(enriched_leads)
     else:
         enriched_leads = []

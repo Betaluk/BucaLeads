@@ -211,6 +211,20 @@ export default function WhatsAppChat({
             const data = JSON.parse(event.data);
             if (data.type === 'new_message') {
               const msg = data.message;
+              if (msg.direction === 'incoming' && onUpdateLeadStatus) {
+                const senderLead = safeLeads.find((l) => {
+                  if (!l) return false;
+                  if (msg.lead_id && l.id === msg.lead_id) return true;
+                  if (l.phone && msg.phone) {
+                    const lDigits = String(l.phone).replace(/\D/g, '');
+                    return lDigits.endsWith(msg.phone.slice(-8)) || msg.phone.endsWith(lDigits.slice(-8));
+                  }
+                  return false;
+                });
+                if (senderLead && (senderLead.crm_status === 'new' || senderLead.crm_status === 'contacted')) {
+                  onUpdateLeadStatus(senderLead.id, 'in_conversation');
+                }
+              }
               setActivePhone((currPhone) => {
                 if (currPhone && (msg.phone.endsWith(currPhone.slice(-8)) || currPhone.endsWith(msg.phone.slice(-8)))) {
                   setMessages((prev) => {
@@ -302,6 +316,11 @@ export default function WhatsAppChat({
         const newMsg = await res.json();
         setMessages((prev) => [...prev, newMsg]);
         fetchConversations();
+
+        // Se o lead associado estiver em 'new', atualizar no Kanban em tempo real para 'contacted'
+        if (activeLead && activeLead.crm_status === 'new' && onUpdateLeadStatus) {
+          onUpdateLeadStatus(activeLead.id, 'contacted');
+        }
       } else {
         const err = await res.json();
         alert(`Erro ao enviar mensagem: ${err.detail || 'Falha no envio'}`);

@@ -221,8 +221,6 @@ export default function App() {
     ]);
     setSyncing(false);
   }, [selectedSearchId, fetchLeads, fetchStats, fetchHistory, fetchUnreadCount]);
-
-  // Carregar dados na montagem
   useEffect(() => {
     let mounted = true;
     const init = async () => {
@@ -233,6 +231,85 @@ export default function App() {
       mounted = false;
     };
   }, [loadAllData]);
+
+  // Sincronização em tempo real via WebSocket para o Kanban e Contador do WhatsApp
+  useEffect(() => {
+    const wsUrl = API_BASE.replace(/^http/, 'ws');
+    let ws = null;
+    let reconnectTimeout = null;
+
+    const connectWs = () => {
+      try {
+        ws = new WebSocket(`${wsUrl}/api/whatsapp/ws`);
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'new_message') {
+              const msg = data.message;
+              if (msg.direction === 'incoming') {
+                setUnreadTotal((prev) => prev + 1);
+                // Se o lead respondeu e estava em 'new' ou 'contacted', avança no Kanban para 'in_conversation'
+                setLeads((prevLeads) => {
+                  let updated = false;
+                  const newLeads = prevLeads.map((l) => {
+                    const lDigits = String(l.phone || '').replace(/\D/g, '');
+                    const matches =
+                      (msg.lead_id && l.id === msg.lead_id) ||
+                      (msg.phone && lDigits && (lDigits.endsWith(msg.phone.slice(-8)) || msg.phone.endsWith(lDigits.slice(-8))));
+                    if (matches && (l.crm_status === 'new' || l.crm_status === 'contacted')) {
+                      updated = true;
+                      return { ...l, crm_status: 'in_conversation' };
+                    }
+                    return l;
+                  });
+                  if (updated) {
+                    fetchStats(selectedSearchId);
+                  }
+                  return newLeads;
+                });
+              } else if (msg.direction === 'outgoing') {
+                // Se enviou mensagem e estava em 'new', atualiza para 'contacted'
+                setLeads((prevLeads) => {
+                  let updated = false;
+                  const newLeads = prevLeads.map((l) => {
+                    const lDigits = String(l.phone || '').replace(/\D/g, '');
+                    const matches =
+                      (msg.lead_id && l.id === msg.lead_id) ||
+                      (msg.phone && lDigits && (lDigits.endsWith(msg.phone.slice(-8)) || msg.phone.endsWith(lDigits.slice(-8))));
+                    if (matches && l.crm_status === 'new') {
+                      updated = true;
+                      return { ...l, crm_status: 'contacted' };
+                    }
+                    return l;
+                  });
+                  if (updated) {
+                    fetchStats(selectedSearchId);
+                  }
+                  return newLeads;
+                });
+              }
+            }
+          } catch (err) {
+            console.error('[App WS] Erro processando evento:', err);
+          }
+        };
+
+        ws.onclose = () => {
+          reconnectTimeout = setTimeout(connectWs, 4000);
+        };
+      } catch {
+        reconnectTimeout = setTimeout(connectWs, 4000);
+      }
+    };
+
+    connectWs();
+
+    return () => {
+      if (ws) ws.close();
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+    };
+  }, [selectedSearchId, fetchStats]);
 
   // Atalho global: Tecla ESC fecha modais abertos
   useEffect(() => {
@@ -283,12 +360,23 @@ export default function App() {
         await loadAllData(data.search_id);
         setActiveTab('kanban');
       } else {
-        const err = await res.json();
-        showNotification(err.detail || 'Falha ao executar busca de leads.', 'error');
+        let errDetail = 'Falha ao executar busca de leads.';
+        try {
+          const err = await res.json();
+          errDetail = err.detail || errDetail;
+        } catch {
+          const text = await res.text();
+          if (text) errDetail = `Erro HTTP ${res.status}: ${text.slice(0, 120)}`;
+        }
+        showNotification(errDetail, 'error');
       }
     } catch (err) {
       console.error('Erro na busca:', err);
-      showNotification('Erro de conexão ao executar a busca.', 'error');
+      const isNetworkErr = err.name === 'TypeError' || (err.message && err.message.includes('fetch'));
+      const msg = isNetworkErr
+        ? 'Servidor backend offline ou inacessível na porta 8000. Verifique se o backend está em execução.'
+        : `Erro ao executar a busca: ${err.message || 'Falha de conexão'}`;
+      showNotification(msg, 'error');
     } finally {
       setSearchLoading(false);
     }

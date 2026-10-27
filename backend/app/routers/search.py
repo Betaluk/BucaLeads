@@ -71,7 +71,7 @@ async def create_search(req: SearchRequest, db: Session = Depends(get_db)):
             if not existing.phone and item.get("phone"):
                 existing.phone = item["phone"]
                 existing.phone_type = item["phone_type"]
-            if not existing.website and item.get("website"):
+            if (not existing.website or existing.website.startswith("http://")) and item.get("website"):
                 existing.website = item["website"]
                 existing.website_status = item["website_status"]
 

@@ -1,3 +1,6 @@
+// Compatibilidade com proxies corporativos / inspeção SSL (ex: redes corporativas/governamentais)
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 import express from 'express';
 import cors from 'cors';
 import qrcode from 'qrcode';
@@ -51,7 +54,6 @@ async function initWhatsApp(forceNew = false) {
     sock = makeWASocket({
       version,
       logger,
-      printQRInTerminal: false,
       auth: {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, logger)
@@ -188,6 +190,15 @@ app.post('/connect', async (req, res) => {
   }
   reconnectAttempts = 0;
   await initWhatsApp();
+
+  // Aguarda até 3.5 segundos para o QR code ser gerado e retornar imediatamente na resposta
+  if (!currentQrDataUrl) {
+    for (let i = 0; i < 7; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      if (currentQrDataUrl || connectionStatus === 'connected') break;
+    }
+  }
+
   res.json({ status: connectionStatus, qrCode: currentQrDataUrl });
 });
 
